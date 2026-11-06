@@ -15,7 +15,15 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Modules préalables (prérequis) : un module se termine avant le début du suivant | `Modules.prerequis` |
 | Jours de cours et créneaux (matin / après-midi / soir…) par groupe | `Parametres`, `Creneaux`, `Groupes.jours_cours`, `Groupes.creneaux` |
 | Jours de stage (pas de cours) | `Stages` |
-| Jours fériés, congés, vacances | `Fermetures` |
+| Jours fériés (toujours fermés) et congés scolaires (cours possibles si l'établissement le prévoit) | `Fermetures.type`, `cours_pendant_conges` |
+| Plages horaires et nombre de périodes, y compris des plages propres au samedi | `Creneaux` (= plages), `Creneaux.jours` |
+| Taille des séances : plage entière, 2 à 9 périodes (8/9 = journée complète), modulable | `bloc_defaut`, `Cours.bloc` |
+| Implantations : formation rattachée à un site, cours donné sur un autre site, locaux par site | `Implantations`, `Groupes.implantation`, `Cours.implantation`, `Locaux.implantation` |
+| Enseignant sur plusieurs implantations le même jour (autorisé ou non, délai de déplacement) | `multi_sites_meme_jour`, `delai_deplacement_min` |
+| Implantations où chaque enseignant intervient | `enseignants_toutes_implantations`, `Enseignants.implantations` |
+| Dates d'engagement et de fin de contrat (y compris la pension) | `Enseignants.date_debut`, `Enseignants.date_fin` |
+| Cours **hybrides** : périodes à distance, sans local | `Cours.periodes_distanciel` (+ bascule séance par séance) |
+| Locaux imposés pour un cours | `Cours.locaux` |
 | Taille du groupe et capacité des locaux | `Groupes.effectif`, `Locaux.capacite` |
 | Disponibilités et indisponibilités des enseignants | `Enseignants.disponibilites`, `Indisponibilites` |
 | Indisponibilités des locaux (travaux, examens…) | `Indisponibilites` (type `local`) |
@@ -23,7 +31,27 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Matériel mobile en quantité limitée | `Ressources`, `Cours.ressources` |
 | Local attitré d'un groupe | `Groupes.local_prefere` |
 | Rythme **fixe** (mêmes jours/heures du début à la fin) ou **souple** (changements, pauses et reprises) | `Cours.rythme`, `Parametres.rythme_defaut` |
-| Plafond hebdomadaire d'un enseignant, rythme maximal d'un cours | `max_periodes_semaine`, `max_seances_semaine` |
+| Plafond hebdomadaire d'un enseignant (général ou individuel), rythme maximal d'un cours | `max_periodes_semaine_defaut`, `Enseignants.max_periodes_semaine`, `max_seances_semaine` |
+
+## Utilisation
+
+1. **Première connexion** : un assistant en 5 étapes décrit l'établissement. Les étapes sont l'année
+   scolaire, les jours, congés et fériés ; les plages horaires et leurs périodes ; la taille habituelle
+   des séances ; les implantations et les règles de déplacement ; les règles pour les enseignants.
+   Tout reste modifiable dans le menu **Paramètres**.
+2. **Données** : import Excel/CSV (« Compléter ce qui manque avec » reprend les paramètres et les
+   données déjà saisis). Les cours, enseignants, groupes et locaux sont listés. Un clic ouvre leur
+   **fiche**, modifiable :
+   - **cours** : enseignants, périodes, taille des séances, rythme, implantation, locaux imposés,
+     cours hybride, liste de ses séances avec bascule présentiel / distanciel ;
+   - **enseignant** : disponibilités, plafond hebdomadaire, implantations, dates de contrat,
+     liste de ses attributions.
+3. **Planifier**, puis consulter l'horaire :
+   - **vue par groupe, enseignant ou local**, affichée par jour, semaine, mois, année civile ou
+     année scolaire ;
+   - **vue « Jour »** : tous les groupes de la journée avec leurs locaux.
+
+   Un clic sur une séance ouvre la fiche du cours.
 
 ## Import des données
 
@@ -167,13 +195,19 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 25 tests couvrent le moteur, les imports et la sécurité :
-- **moteur** : aucune double réservation (groupe, local, enseignant), respect de chaque contrainte,
-  prérequis, co-enseignement, répartition entre enseignants, attributions par groupe, matériel et
-  plafonds, salle fixe par créneau, signalement des manques, cohérence complète sur un établissement généré ;
+Les 33 tests couvrent le moteur, les imports et la sécurité :
+- **moteur** :
+  - aucune double réservation (groupe, local, enseignant), période par période ;
+  - respect de chaque contrainte : prérequis, co-enseignement, répartition entre enseignants,
+    attributions par groupe, matériel et plafonds, rythme fixe ;
+  - implantations et délais de déplacement, blocs de 2 périodes et journées complètes, plages du samedi,
+    cours hybrides, contrats, congés ;
+  - signalement des manques, cohérence complète sur un établissement généré ;
 - **imports** : allers-retours Excel et CSV, CSV Windows-1252 avec dates belges, identifiants du logiciel de gestion ;
-- **sécurité** : accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos, détection de
-  falsification, parcours complet par l'API.
+- **sécurité et API** :
+  - accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos, détection de falsification ;
+  - création d'un établissement vierge, modification versionnée des données (conflits détectés),
+    bascule présentiel / distanciel d'une séance, parcours complet.
 
 ## Performances
 

@@ -25,19 +25,26 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
     `candidats[u.idx]` : liste des (créneau hebdo, dispo) envisageables pour l'unité.
     """
     T = hz.T
-    W = len(hz.creneaux_hebdo)
+    W = max(1, len(hz.creneaux_hebdo))
     locaux = {l.id: l for l in ds.locaux}
     ens = {e.id: e for e in ds.enseignants}
     res_q = {r.id: r.quantite for r in ds.ressources}
 
-    occ_groupe = defaultdict(set)  # (g, w) -> semaines
-    occ_ens = defaultdict(set)  # (e, w) -> semaines
-    occ_local = defaultdict(set)  # (local, w) -> semaines
+    from .moteur import creneaux_incompatibles
+
+    occ_groupe = defaultdict(set)  # (g, jour, période) -> semaines
+    occ_ens = defaultdict(set)  # (e, jour, période) -> semaines
+    occ_local = defaultdict(set)  # (local, jour, période) -> semaines
     charge_ens = defaultdict(int)  # (e, semaine) -> périodes
-    occ_res = defaultdict(int)  # (r, w, semaine) -> nb
+    occ_res = defaultdict(int)  # (r, jour, période, semaine) -> nb
+    sites_ens = defaultdict(list)  # (e, semaine) -> [(implantation, créneau)]
+    plafonds = {e.id: (e.max_periodes_semaine if e.max_periodes_semaine is not None
+                       else ds.etablissement.max_periodes_semaine_defaut) for e in ds.enseignants}
+    deplacements = len(ds.etablissement.implantations) > 1
     for l in ds.locaux:
-        for ch in hz.creneaux_hebdo:
-            occ_local[(l.id, ch.w)].update(hz.local_bloque(l, ch))
+        for j in hz.jours:
+            for pj in hz.journee[j]:
+                occ_local[(l.id, j, pj.rang)].update(hz.local_bloque(l, hz.creneau(j, pj.rang, 1)))
 
     fin_module: dict[tuple[str, str], int] = {}  # rang de la dernière séance
     solution: dict = {}
@@ -62,32 +69,44 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
     ordre_unites = sorted(unites, key=lambda u: (rang[(u.groupe.id, u.module.id)], liberte(u) / max(u.periodes, 1)))
 
     def semaine_libre(u: Unite, ch, t: int, local: str | None, deja: int = 0) -> bool:
-        if t in occ_groupe[(u.groupe.id, ch.w)]:
+        j = ch.jour_idx
+        if any(t in occ_groupe[(u.groupe.id, j, r)] for r in ch.rangs):
             return False
-        pw = ch.creneau.periodes
+        pw = ch.periodes
         for e in u.enseignants:
-            if t in occ_ens[(e, ch.w)]:
+            if any(t in occ_ens[(e, j, r)] for r in ch.rangs):
                 return False
-            m = ens[e].max_periodes_semaine
+            m = plafonds[e]
             if m is not None and charge_ens[(e, t)] + deja + pw > m:
                 return False
-        for r in u.cours.ressources:
-            if occ_res[(r, ch.w, t)] >= res_q[r]:
+            if deplacements and not u.distanciel and u.implantation and any(
+                    site != u.implantation and creneaux_incompatibles(ds, ch, autre) for site, autre in sites_ens[(e, t)]):
                 return False
-        return local is None or t not in occ_local[(local, ch.w)]
+        for rs in u.cours.ressources:
+            if any(occ_res[(rs, j, r, t)] >= res_q[rs] for r in ch.rangs):
+                return False
+        return local is None or all(t not in occ_local[(local, j, r)] for r in ch.rangs)
 
-    def placer(u: Unite, ch, k: int, s: int, e: int, r: str):
+    def placer(u: Unite, ch, k: int, s: int, e: int, r: str | None):
         solution[(u.idx, ch.w, k)] = (s, e, r)
+        j = ch.jour_idx
         for t in range(s, e):
-            occ_groupe[(u.groupe.id, ch.w)].add(t)
-            occ_local[(r, ch.w)].add(t)
+            for rang in ch.rangs:
+                occ_groupe[(u.groupe.id, j, rang)].add(t)
+                if r:
+                    occ_local[(r, j, rang)].add(t)
+                for en in u.enseignants:
+                    occ_ens[(en, j, rang)].add(t)
+                for rs in u.cours.ressources:
+                    occ_res[(rs, j, rang, t)] += 1
             for en in u.enseignants:
-                occ_ens[(en, ch.w)].add(t)
-                charge_ens[(en, t)] += ch.creneau.periodes
-            for rs in u.cours.ressources:
-                occ_res[(rs, ch.w, t)] += 1
+                charge_ens[(en, t)] += ch.periodes
+                if u.implantation and not u.distanciel:
+                    sites_ens[(en, t)].append((u.implantation, ch))
 
     def locaux_tries(u: Unite):
+        if u.distanciel:
+            return [None]  # séance à distance : pas de local
         return sorted(eligibles[u.idx], key=lambda r: (r != u.groupe.local_prefere, locaux[r].capacite))
 
     def premiere_semaine(ch, rang_min: int) -> int:
@@ -105,7 +124,7 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
             for ch, dispo in options:
                 if nb_seg[ch.w] >= segments or (not nb_seg[ch.w] and utilises >= max_creneaux):
                     continue
-                pw = ch.creneau.periodes
+                pw = ch.periodes
                 s_min = max(premiere_semaine(ch, rang_min), fin_w.get(ch.w, 0))
                 debut = next((t for t in range(s_min, T) if dispo[t] and semaine_libre(u, ch, t, None)), None)
                 if debut is None:
@@ -131,7 +150,7 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
             nb_seg[ch.w] += 1
             fin_w[ch.w] = e
             fins.append((e - 1) * W + ch.w)
-            reste -= n * ch.creneau.periodes
+            reste -= n * ch.periodes
         return fins
 
     def placer_fixe(u: Unite, rang_min: int) -> list[int]:
@@ -151,8 +170,8 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
                 continue
             salles = []
             for ch, _ in ens_:
-                r = next((r for r in locaux_tries(u) if semaine_libre(u, ch, s, r)), None)
-                if r is None:
+                r = next((r for r in locaux_tries(u) if semaine_libre(u, ch, s, r)), False)
+                if r is False:
                     break
                 salles.append(r)
             if len(salles) != len(ens_):
@@ -168,14 +187,16 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
                         break
                     if d[t]:
                         dernier[ch.w] = t
-                        reste -= ch.creneau.periodes
-                        deja += ch.creneau.periodes
+                        reste -= ch.periodes
+                        deja += ch.periodes
                 t += 1
             if len(dernier) != len(ens_):
                 continue
             fins_sem = [dernier[ch.w] + 1 for ch, _ in ens_]
             if min(fins_sem) < max(fins_sem) - 1:
                 continue  # les créneaux ne finiraient pas ensemble
+            if any(set(a.rangs) & set(b.rangs) for (a, _), (b, _) in zip(ens_, ens_[1:])):
+                continue  # deux blocs qui se chevauchent le même jour
             rang_fin = max(dernier[ch.w] * W + ch.w for ch, _ in ens_)
             cle = (reste > 0, rang_fin, len(ens_), s)
             if meilleur is None or cle < meilleur[0]:

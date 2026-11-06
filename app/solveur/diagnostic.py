@@ -8,7 +8,9 @@ from __future__ import annotations
 from collections import defaultdict
 
 from ..modeles import JeuDeDonnees
-from .moteur import Horizon, Unite, construire_unites, dispo_hebdo, locaux_eligibles
+from .moteur import (
+    Horizon, Unite, construire_unites, dispo_hebdo, eligibles_unite, va_sur_implantation,
+)
 
 
 def _msg(niveau: str, sujet: str, message: str, suggestion: str = "") -> dict:
@@ -37,12 +39,14 @@ def cycles_prerequis(ds: JeuDeDonnees) -> list[list[str]]:
 def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True) -> int:
     """Périodes que l'unité pourrait recevoir si elle était seule (sans concurrence)."""
     par_semaine = defaultdict(list)
-    for ch in hz.creneaux_hebdo:
-        dispo = hz.dispo_unite(u, ch, avec_enseignants)
-        if dispo:
-            for t, ok in enumerate(dispo):
-                if ok:
-                    par_semaine[t].append(ch.creneau.periodes)
+    for j in hz.jours:
+        for d, n in hz.positions(j, u.bloc, sans_chevauchement=True):
+            ch = hz.creneau(j, d, n)
+            dispo = hz.dispo_unite(u, ch, avec_enseignants)
+            if dispo:
+                for t, ok in enumerate(dispo):
+                    if ok:
+                        par_semaine[t].append(ch.periodes)
     k = u.cours.max_seances_semaine
     return sum(sum(sorted(v, reverse=True)[:k] if k else v) for v in par_semaine.values())
 
@@ -50,8 +54,10 @@ def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True) -> int:
 def avant_planification(ds: JeuDeDonnees) -> list[dict]:
     out: list[dict] = []
     hz = Horizon(ds)
-    if not any(any(hz.base_groupe(g, ch)) for g in ds.groupes for ch in hz.creneaux_hebdo if hz.groupe_autorise(g, ch)):
-        return [_msg("erreur", "calendrier", "Aucun créneau de cours : vérifiez dates, jours de cours et fermetures.")]
+    plages_jour = [hz.creneau(j, d, n) for j in hz.jours for d, n in hz.positions(j, "plage")]
+    if not any(any(hz._ouvert[j]) for j in hz.jours) or not plages_jour:
+        return [_msg("erreur", "calendrier", "Aucun créneau de cours : vérifiez dates, jours de cours, plages horaires et fermetures.")]
+    ens_par_id = {e.id: e for e in ds.enseignants}
 
     for cyc in cycles_prerequis(ds):
         out.append(_msg("erreur", "prérequis", "Cycle de prérequis : " + " → ".join(cyc),
@@ -63,7 +69,7 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
         par_groupe[u.groupe.id].append(u)
 
     for g in ds.groupes:
-        dispo = sum(ch.creneau.periodes * sum(hz.base_groupe(g, ch)) for ch in hz.creneaux_hebdo if hz.groupe_autorise(g, ch))
+        dispo = sum(ch.periodes * sum(hz.base_groupe(g, ch)) for ch in plages_jour if hz.groupe_autorise(g, ch))
         requis = sum(ds.module(m).periodes for m in g.modules)
         if requis > dispo:
             out.append(_msg("erreur", f"groupe {g.id}",
@@ -79,12 +85,23 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
     for u in unites:
         sujet = f"{u.groupe.id} / {u.cours.id}" + (f" ({' + '.join(u.enseignants)})" if len(u.cours.attributions_pour(u.groupe.id)) > 1 else "")
         cle_local = (u.groupe.id, u.cours.id)
-        if not locaux_eligibles(ds, u.groupe, u.cours):
+        if not u.distanciel and not eligibles_unite(ds, u):
             if cle_local not in deja:
                 deja.add(cle_local)
-                besoin = f"capacité ≥ {u.groupe.effectif}" + (f", équipements {', '.join(u.cours.equipements)}" if u.cours.equipements else "")
+                besoin = f"capacité ≥ {u.groupe.effectif}" + (f", équipements {', '.join(u.cours.equipements)}" if u.cours.equipements else "") \
+                    + (f", implantation {u.implantation}" if u.implantation else "") + (f", locaux {', '.join(u.cours.locaux)}" if u.cours.locaux else "")
                 out.append(_msg("erreur", sujet, f"Aucun local compatible ({besoin}).",
                                 "Ajoutez un local adapté, un équipement, ou scindez le groupe."))
+            continue
+        if not u.distanciel:
+            hors_site = [e for e in u.enseignants if not va_sur_implantation(ds, ens_par_id[e], u.implantation)]
+            if hors_site:
+                out.append(_msg("erreur", sujet, f"{', '.join(hors_site)} n'enseigne pas sur l'implantation {u.implantation}.",
+                                "Ajoutez cette implantation à l'enseignant ou changez l'attribution."))
+                continue
+        if not any(hz.positions(j, u.bloc) for j in hz.jours):
+            out.append(_msg("erreur", sujet, f"Aucune séance possible en blocs de {u.bloc} périodes avec les plages horaires définies.",
+                            "Choisissez une autre taille de bloc pour ce cours."))
             continue
         for r in u.cours.ressources:
             if next(x for x in ds.ressources if x.id == r).quantite == 0:
@@ -111,11 +128,12 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
         if not charge[e.id]:
             continue
         dispo = 0
-        for ch in hz.creneaux_hebdo:
-            if dispo_hebdo(e, ch.jour, ch.creneau.id):
-                dispo += ch.creneau.periodes * sum(
-                    1 for t in range(hz.T) if hz._ouvert[ch.w][t]
-                    and not any(i.bloque(hz.date(t, ch), ch.creneau.id) for i in e.indisponibilites))
+        for ch in plages_jour:
+            pl = ch.plages[0]
+            if dispo_hebdo(e, ch.jour, pl):
+                dispo += ch.periodes * sum(
+                    1 for t in range(hz.T) if hz._ouvert[ch.jour_idx][t] and e.sous_contrat(hz.date(t, ch))
+                    and not any(i.bloque(hz.date(t, ch), pl) for i in e.indisponibilites))
         if charge[e.id] > dispo:
             out.append(_msg("erreur", f"enseignant {e.id}",
                             f"{charge[e.id]} périodes attribuées pour {dispo} périodes de disponibilité sur la période.",
@@ -123,9 +141,10 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
         elif charge[e.id] > 0.85 * dispo:
             out.append(_msg("avertissement", f"enseignant {e.id}",
                             f"Enseignant très chargé : {charge[e.id]} périodes attribuées pour {dispo} disponibles."))
-        if e.max_periodes_semaine is not None and charge[e.id] > e.max_periodes_semaine * hz.T:
+        plafond = e.max_periodes_semaine if e.max_periodes_semaine is not None else ds.etablissement.max_periodes_semaine_defaut
+        if plafond is not None and charge[e.id] > plafond * hz.T:
             out.append(_msg("erreur", f"enseignant {e.id}",
-                            f"Plafond hebdomadaire ({e.max_periodes_semaine} p.) insuffisant pour {charge[e.id]} périodes "
+                            f"Plafond hebdomadaire ({plafond} p.) insuffisant pour {charge[e.id]} périodes "
                             f"sur {hz.T} semaines."))
     return out
 
@@ -134,11 +153,13 @@ def apres_planification(ds: JeuDeDonnees, resultat: dict) -> list[dict]:
     """Explique les cours incomplets après résolution."""
     out = []
     hz = Horizon(ds)
-    unites = {(u.groupe.id, u.cours.id, u.enseignants): u for u in construire_unites(ds)}
+    unites = {(u.groupe.id, u.cours.id, u.enseignants, u.distanciel): u for u in construire_unites(ds)}
     for ligne in resultat.get("synthese", []):
         if ligne["periodes_manquantes"] <= 0:
             continue
-        u = unites[(ligne["groupe"], ligne["cours"], tuple(ligne["enseignants"]))]
+        u = unites.get((ligne["groupe"], ligne["cours"], tuple(ligne["enseignants"]), ligne.get("distanciel", False)))
+        if u is None:
+            continue
         cap = capacite_unite(hz, u)
         cause = (
             "les créneaux compatibles sont insuffisants" if cap < u.periodes

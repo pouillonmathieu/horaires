@@ -27,32 +27,58 @@ def resultat(ds):
     return planifier(ds, Parametres(duree_max_s=30)).en_dict()
 
 
+def _minutes(h):
+    return int(h[:2]) * 60 + int(h[3:])
+
+
 def verifier_coherence(ds: JeuDeDonnees, r: dict):
     """Vérifie toutes les contraintes dures sur un horaire calculé."""
     groupes = {g.id: g for g in ds.groupes}
     locaux = {l.id: l for l in ds.locaux}
     ens = {e.id: e for e in ds.enseignants}
     cours = {c.id: c for m in ds.modules for c in m.cours}
+    et = ds.etablissement
     occupe = defaultdict(int)
+    sites = defaultdict(list)  # (enseignant, date) -> [(implantation, début, fin)]
     for s in r["seances"]:
         d = date.fromisoformat(s["date"])
-        g, c, l = groupes[s["groupe"]], cours[s["cours"]], locaux[s["local"]]
-        cle = (s["date"], s["creneau"])
-        occupe[("g", s["groupe"]) + cle] += 1
-        occupe[("l", s["local"]) + cle] += 1
+        g, c = groupes[s["groupe"]], cours[s["cours"]]
+        plages = s["creneau"].split("+")
+        rangs = range(s["debut_periode"], s["debut_periode"] + s["periodes"])
+        for rang in rangs:
+            occupe[("g", s["groupe"], s["date"], rang)] += 1
+            if not s["distanciel"]:
+                occupe[("l", s["local"], s["date"], rang)] += 1
+            for e in s["enseignants"]:
+                occupe[("e", e, s["date"], rang)] += 1
         for e in s["enseignants"]:
-            occupe[("e", e) + cle] += 1
-            assert ens[e].disponible(d, s["creneau"]), f"{e} indisponible le {d}"
-        assert not any(f.contient(d) for f in ds.calendrier.fermetures), "cours un jour de fermeture"
+            assert all(ens[e].disponible(d, p) for p in plages), f"{e} indisponible le {d}"
+            if not s["distanciel"] and s["implantation"]:
+                sites[(e, s["date"])].append((s["implantation"], _minutes(s["heure_debut"]), _minutes(s["heure_fin"])))
+        assert not ds.calendrier.ferme(d), "cours un jour de fermeture"
         assert not any(st.bloque(d) for st in g.stages), "cours pendant un stage"
+        assert any(a.enseignants == s["enseignants"] for a in c.attributions_pour(g.id))
+        assert not g.creneaux or all(p in g.creneaux for p in plages)
+        assert JOURS[d.weekday()] in (g.jours_cours or ds.calendrier.jours_cours)
+        if s["distanciel"]:
+            assert s["local"] == "Distanciel"
+            continue
+        l = locaux[s["local"]]
         assert l.capacite >= g.effectif
         assert set(c.equipements) <= set(l.equipements)
-        assert not any(i.bloque(d, s["creneau"]) for i in l.indisponibilites)
-        assert any(a.enseignants == s["enseignants"] for a in c.attributions_pour(g.id))
-        assert not g.creneaux or s["creneau"] in g.creneaux
-        assert JOURS[d.weekday()] in (g.jours_cours or ds.calendrier.jours_cours)
+        assert not c.locaux or l.id in c.locaux
+        assert s["implantation"] is None or l.implantation in (None, s["implantation"]), "local hors implantation"
+        assert not any(i.bloque(d, p) for i in l.indisponibilites for p in plages)
+        for e in s["enseignants"]:
+            assert not s["implantation"] or not ens[e].implantations or s["implantation"] in ens[e].implantations
     doublons = [k for k, n in occupe.items() if n > 1]
     assert not doublons, f"doubles réservations : {doublons[:5]}"
+    for (e, jour), lst in sites.items():
+        lst.sort(key=lambda x: x[1])
+        for (s1, _d1, f1), (s2, d2, _f2) in zip(lst, lst[1:]):
+            if s1 != s2:
+                assert et.multi_sites_meme_jour, f"{e} sur deux implantations le {jour}"
+                assert d2 - f1 >= et.delai_deplacement_min, f"{e} : déplacement trop court le {jour}"
 
     # prérequis : toutes les séances du module préalable avant la première du suivant
     bornes = {}
@@ -73,7 +99,7 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
         c = cours[s["cours"]]
         if (c.rythme or ds.calendrier.rythme_defaut) != "fixe":
             continue
-        u, w = (s["groupe"], s["cours"], s["enseignant"]), (s["jour"], s["creneau"])
+        u, w = (s["groupe"], s["cours"], s["enseignant"], s["distanciel"]), (s["jour"], s["debut_periode"], s["periodes"])
         sem = date.fromisoformat(s["date"]).toordinal() // 7
         debuts[u][w] = min(debuts[u].get(w, sem), sem)
         fins[u][w] = max(fins[u].get(w, sem), sem)
@@ -96,6 +122,7 @@ def test_contraintes_respectees(ds, resultat):
 
 def test_co_enseignement_repartition_et_attributions_par_groupe(resultat):
     synth = {(l["groupe"], l["cours"], l["enseignant"]): l for l in resultat["synthese"]}
+    synth = {(l["groupe"], l["cours"], l["enseignant"]): l for l in resultat["synthese"] if not l["distanciel"]}
     assert synth[("AS1", "AS-HYG-PR", "LAMBERT + MERTENS")]["periodes_planifiees"] == 40
     assert synth[("AS1", "AS-SOINS-PR", "LAMBERT")]["periodes_planifiees"] == 60
     assert synth[("AS1", "AS-SOINS-PR", "MERTENS")]["periodes_planifiees"] == 40
@@ -236,3 +263,99 @@ def test_identifiants_du_logiciel_de_gestion():
         brut["modules"][0]["id"] = mauvais
         with pytest.raises(ValueError):
             JeuDeDonnees.model_validate(brut)
+
+
+# ---------------------------------------------------------------------------- paramétrage d'établissement
+def petit_jeu(**modifs):
+    """Deux implantations, un enseignant partagé : de quoi tester déplacements, blocs, distanciel, contrats."""
+    brut = {
+        "nom": "Petit",
+        "etablissement": {"implantations": [{"id": "X"}, {"id": "Y"}], "delai_deplacement_min": 90},
+        "calendrier": {"date_debut": "2027-01-04", "date_fin": "2027-03-26", "jours_cours": ["lun", "mar"],
+                       "creneaux": [{"id": "matin", "heure_debut": "08:30", "heure_fin": "12:00", "periodes": 4},
+                                    {"id": "aprem", "heure_debut": "13:00", "heure_fin": "16:20", "periodes": 4}]},
+        "locaux": [{"id": "LX", "implantation": "X", "capacite": 20}, {"id": "LY", "implantation": "Y", "capacite": 20}],
+        "enseignants": [{"id": "T"}, {"id": "U"}],
+        "modules": [{"id": "MA", "cours": [{"id": "CA", "periodes": 16, "attributions": [{"enseignants": ["T"], "periodes": 16}]}]},
+                    {"id": "MB", "cours": [{"id": "CB", "periodes": 16, "attributions": [{"enseignants": ["T"], "periodes": 16}]}]}],
+        "groupes": [{"id": "GA", "effectif": 10, "implantation": "X", "modules": ["MA"], "creneaux": ["matin"]},
+                    {"id": "GB", "effectif": 10, "implantation": "Y", "modules": ["MB"], "creneaux": ["aprem"]}],
+    }
+    for chemin, valeur in modifs.items():
+        cible = brut
+        *debut, fin = chemin.split(".")
+        for k in debut:
+            cible = cible[int(k)] if k.isdigit() else cible[k]
+        cible[int(fin) if fin.isdigit() else fin] = valeur
+    return JeuDeDonnees.model_validate(brut)
+
+
+def _planifier(ds, duree=15):
+    r = planifier(ds, Parametres(duree_max_s=duree)).en_dict()
+    assert r["statut"] in ("OPTIMAL", "REALISABLE")
+    verifier_coherence(ds, r)
+    return r
+
+
+def test_deplacement_entre_implantations():
+    r = _planifier(petit_jeu())
+    assert sum(l["periodes_manquantes"] for l in r["synthese"]) == 0
+    par_jour = defaultdict(set)
+    for s in r["seances"]:
+        par_jour[s["date"]].add(s["implantation"])
+    assert all(len(v) == 1 for v in par_jour.values()), "délai de 90 min : jamais deux sites le même jour"
+
+
+def test_un_seul_site_par_jour():
+    ds = petit_jeu(**{"etablissement.multi_sites_meme_jour": False, "etablissement.delai_deplacement_min": 0})
+    r = _planifier(ds)
+    assert all(len({s["implantation"] for s in r["seances"] if s["date"] == d}) == 1 for d in {s["date"] for s in r["seances"]})
+
+
+def test_enseignant_limite_a_une_implantation():
+    ds = petit_jeu(**{"enseignants.0.implantations": ["X"]})
+    assert any("n'enseigne pas sur l'implantation Y" in d["message"] for d in avant_planification(ds))
+    r = _planifier(ds)
+    manque = {l["cours"]: l["periodes_manquantes"] for l in r["synthese"]}
+    assert manque == {"CA": 0, "CB": 16}
+
+
+def test_blocs_de_2_et_journee_complete():
+    ds = petit_jeu(**{"modules.0.cours.0.bloc": "2", "modules.1.cours.0.bloc": "8", "groupes.1.creneaux": []})
+    r = _planifier(ds)
+    assert sum(l["periodes_manquantes"] for l in r["synthese"]) == 0
+    assert {s["periodes"] for s in r["seances"] if s["cours"] == "CA"} == {2}
+    journees = [s for s in r["seances"] if s["cours"] == "CB"]
+    assert journees and all(s["periodes"] == 8 and s["heure_debut"] == "08:30" and s["heure_fin"] == "16:20" for s in journees)
+
+
+def test_cours_hybride():
+    ds = petit_jeu(**{"modules.0.cours.0.periodes_distanciel": 8})
+    r = _planifier(ds)
+    dist = [s for s in r["seances"] if s["cours"] == "CA" and s["distanciel"]]
+    assert sum(s["periodes"] for s in dist) == 8 and all(s["local"] == "Distanciel" for s in dist)
+    assert sum(s["periodes"] for s in r["seances"] if s["cours"] == "CA" and not s["distanciel"]) == 8
+
+
+def test_contrat_et_conges():
+    ds = petit_jeu(**{"enseignants.0.date_fin": "2027-02-15",
+                      "calendrier.fermetures": [{"date_debut": "2027-01-11", "date_fin": "2027-01-22", "type": "conges"}]})
+    r = _planifier(ds)
+    assert all(s["date"] <= "2027-02-15" for s in r["seances"])
+    assert not any("2027-01-11" <= s["date"] <= "2027-01-22" for s in r["seances"])
+    ouvert = petit_jeu(**{"calendrier.cours_pendant_conges": True,
+                          "calendrier.fermetures": [{"date_debut": "2027-01-11", "date_fin": "2027-01-22", "type": "conges"},
+                                                    {"date_debut": "2027-01-18", "date_fin": "2027-01-18", "type": "ferie"}]})
+    assert not ouvert.calendrier.ferme(date(2027, 1, 12)) and ouvert.calendrier.ferme(date(2027, 1, 18))
+
+
+def test_plage_du_samedi():
+    ds = petit_jeu(**{"calendrier.jours_cours": ["lun", "mar", "sam"],
+                      "calendrier.creneaux": [{"id": "matin", "heure_debut": "08:30", "heure_fin": "12:00", "periodes": 4, "jours": ["lun", "mar"]},
+                                              {"id": "aprem", "heure_debut": "13:00", "heure_fin": "16:20", "periodes": 4},
+                                              {"id": "sam", "heure_debut": "08:00", "heure_fin": "12:10", "periodes": 5, "jours": ["sam"]}],
+                      "groupes.0.creneaux": ["sam"], "modules.0.cours.0.periodes": 15,
+                      "modules.0.cours.0.attributions.0.periodes": 15})
+    r = _planifier(ds)
+    ca = [s for s in r["seances"] if s["cours"] == "CA"]
+    assert ca and all(s["jour"] == "sam" and s["periodes"] == 5 for s in ca)

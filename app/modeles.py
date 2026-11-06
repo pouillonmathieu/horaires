@@ -20,6 +20,18 @@ Texte = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 Heure = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 
 MAX_ELEMENTS = 5000
+BLOCS_PROPOSES = ["plage", "2", "3", "4", "5", "6", "8", "9", "modulable"]
+
+
+def _bloc_valide(v) -> str:
+    """Taille des séances : « plage » (toute la plage horaire), « modulable » (le moteur choisit),
+    ou un nombre de périodes (ex. 2, 4, 8 = journée complète)."""
+    s = str(v).strip().lower()
+    if s in ("plage", "modulable"):
+        return s
+    if s.isdigit() and 1 <= int(s) <= 12:
+        return str(int(s))
+    raise ValueError(f"bloc « {v} » invalide (attendu : plage, modulable ou un nombre de périodes de 1 à 12)")
 
 
 def _jours_valides(v: list[str]) -> list[str]:
@@ -70,12 +82,27 @@ class Stage(Periode):
         return self.contient(d) and (not self.jours or JOURS[d.weekday()] in self.jours)
 
 
+class Fermeture(Periode):
+    """Jour férié (toujours fermé) ou congé scolaire (cours possibles si l'établissement le prévoit)."""
+    type: Literal["ferie", "conges"] = "ferie"
+
+
 class Creneau(Strict):
+    """Plage horaire d'une journée (ex. matin 08:30–12:00, 4 périodes)."""
     id: Id
     libelle: Texte = ""
     heure_debut: Heure
     heure_fin: Heure
-    periodes: int = Field(ge=1, le=20, description="nombre de périodes de cours dans ce créneau")
+    periodes: int = Field(ge=1, le=20, description="nombre de périodes de cours dans cette plage")
+    jours: list[str] = Field(default_factory=list, description="vide = tous les jours de cours (ex. sam pour une plage du samedi)")
+
+    @field_validator("jours")
+    @classmethod
+    def _valide_jours(cls, v: list[str]) -> list[str]:
+        return _jours_valides(v)
+
+    def ouverte(self, jour: str) -> bool:
+        return not self.jours or jour in self.jours
 
     @model_validator(mode="after")
     def _ordre(self):
@@ -95,8 +122,12 @@ class Calendrier(Strict):
         description="fixe = mêmes jours/heures du début à la fin du cours ; souple = changements, pauses et reprises permis",
     )
     jours_cours: list[str] = Field(default_factory=lambda: ["lun", "mar", "mer", "jeu", "ven"])
-    creneaux: list[Creneau] = Field(min_length=1, max_length=20)
-    fermetures: list[Periode] = Field(default_factory=list, description="jours fériés, congés, vacances")
+    cours_pendant_conges: bool = Field(default=False, description="des cours ont lieu pendant les congés scolaires")
+    creneaux: list[Creneau] = Field(min_length=1, max_length=30)
+    fermetures: list[Fermeture] = Field(default_factory=list, description="jours fériés, congés, vacances")
+
+    def ferme(self, d: date) -> bool:
+        return any(f.contient(d) and (f.type == "ferie" or not self.cours_pendant_conges) for f in self.fermetures)
 
     @field_validator("jours_cours")
     @classmethod
@@ -112,9 +143,32 @@ class Calendrier(Strict):
         return self
 
 
+class Implantation(Strict):
+    """Site d'enseignement de l'établissement."""
+    id: Id
+    nom: Texte = ""
+    adresse: Texte = ""
+
+
+class Etablissement(Strict):
+    """Paramètres propres à l'établissement (fixés à la première connexion, modifiables ensuite)."""
+    implantations: list[Implantation] = Field(default_factory=list, max_length=200)
+    multi_sites_meme_jour: bool = Field(default=True, description="un enseignant peut enseigner sur deux implantations le même jour")
+    delai_deplacement_min: int = Field(default=0, ge=0, le=600, description="temps minimal entre deux cours sur des implantations différentes")
+    enseignants_toutes_implantations: bool = Field(default=True, description="sinon, les implantations de chaque enseignant sont à préciser")
+    max_periodes_semaine_defaut: int | None = Field(default=None, ge=1, le=200)
+    bloc_defaut: str = Field(default="plage", description="taille des séances par défaut")
+
+    @field_validator("bloc_defaut", mode="before")
+    @classmethod
+    def _bloc(cls, v):
+        return _bloc_valide(v)
+
+
 class Local(Strict):
     id: Id
     nom: Texte = ""
+    implantation: Id | None = None
     capacite: int = Field(ge=1, le=10000)
     equipements: list[Id] = Field(default_factory=list)
     indisponibilites: list[Indisponibilite] = Field(default_factory=list)
@@ -135,6 +189,9 @@ class Enseignant(Strict):
         description="motifs « jour:creneau » (ex. « lun:soir », « mar:* ») ; vide = toujours disponible",
     )
     max_periodes_semaine: int | None = Field(default=None, ge=0, le=200)
+    implantations: list[Id] = Field(default_factory=list, description="vide = selon le paramètre de l'établissement")
+    date_debut: date | None = Field(default=None, description="date d'engagement")
+    date_fin: date | None = Field(default=None, description="fin de contrat, départ à la pension…")
     indisponibilites: list[Indisponibilite] = Field(default_factory=list)
 
     @field_validator("disponibilites")
@@ -148,7 +205,12 @@ class Enseignant(Strict):
             out.append(f"{_jours_valides([m.group(1)])[0]}:{m.group(2)}")
         return out
 
+    def sous_contrat(self, d: date) -> bool:
+        return (not self.date_debut or d >= self.date_debut) and (not self.date_fin or d <= self.date_fin)
+
     def disponible(self, d: date, creneau_id: str) -> bool:
+        if not self.sous_contrat(d):
+            return False
         if self.disponibilites:
             j = JOURS[d.weekday()]
             if f"{j}:{creneau_id}" not in self.disponibilites and f"{j}:*" not in self.disponibilites:
@@ -177,7 +239,16 @@ class Cours(Strict):
     ressources: list[Id] = Field(default_factory=list, description="matériel mobile requis (1 unité par séance)")
     max_seances_semaine: int | None = Field(default=None, ge=1, le=50)
     rythme: Rythme | None = Field(default=None, description="vide = rythme par défaut du calendrier")
+    bloc: str | None = Field(default=None, description="taille des séances ; vide = valeur par défaut de l'établissement")
+    implantation: Id | None = Field(default=None, description="vide = implantation du groupe")
+    locaux: list[Id] = Field(default_factory=list, description="locaux autorisés ; vide = tout local compatible")
+    periodes_distanciel: int = Field(default=0, ge=0, le=5000, description="périodes données à distance (sans local)")
     attributions: list[Attribution] = Field(min_length=1, max_length=50)
+
+    @field_validator("bloc", mode="before")
+    @classmethod
+    def _bloc(cls, v):
+        return None if v in (None, "") else _bloc_valide(v)
 
     def attributions_pour(self, groupe_id: str) -> list[Attribution]:
         propres = [a for a in self.attributions if groupe_id in a.groupes]
@@ -200,7 +271,8 @@ class Groupe(Strict):
     id: Id
     nom: Texte = ""
     effectif: int = Field(ge=1, le=10000)
-    modules: list[Id] = Field(min_length=1)
+    modules: list[Id] = Field(default_factory=list)
+    implantation: Id | None = Field(default=None, description="implantation où la formation est organisée")
     jours_cours: list[str] = Field(default_factory=list, description="vide = jours du calendrier")
     creneaux: list[Id] = Field(default_factory=list, description="vide = tous les créneaux")
     date_debut: date | None = None
@@ -216,12 +288,13 @@ class Groupe(Strict):
 
 class JeuDeDonnees(Strict):
     nom: Texte = "Sans nom"
+    etablissement: Etablissement = Field(default_factory=Etablissement)
     calendrier: Calendrier
-    locaux: list[Local] = Field(min_length=1, max_length=MAX_ELEMENTS)
+    locaux: list[Local] = Field(default_factory=list, max_length=MAX_ELEMENTS)
     ressources: list[Ressource] = Field(default_factory=list, max_length=MAX_ELEMENTS)
-    enseignants: list[Enseignant] = Field(min_length=1, max_length=MAX_ELEMENTS)
-    modules: list[Module] = Field(min_length=1, max_length=MAX_ELEMENTS)
-    groupes: list[Groupe] = Field(min_length=1, max_length=MAX_ELEMENTS)
+    enseignants: list[Enseignant] = Field(default_factory=list, max_length=MAX_ELEMENTS)
+    modules: list[Module] = Field(default_factory=list, max_length=MAX_ELEMENTS)
+    groupes: list[Groupe] = Field(default_factory=list, max_length=MAX_ELEMENTS)
 
     @model_validator(mode="after")
     def _references(self):
@@ -243,10 +316,26 @@ class JeuDeDonnees(Strict):
         uniques("cours", [c for m in self.modules for c in m.cours])
         groupes = uniques("groupes", self.groupes)
 
-        cr = sorted(self.calendrier.creneaux, key=lambda c: c.heure_debut)
-        for a, b in zip(cr, cr[1:]):
-            if b.heure_debut < a.heure_fin:
-                erreurs.append(f"créneaux {a.id} et {b.id} : les plages horaires se chevauchent")
+        implantations = uniques("implantations", self.etablissement.implantations)
+        for j in self.calendrier.jours_cours:
+            cr = sorted((c for c in self.calendrier.creneaux if c.ouverte(j)), key=lambda c: c.heure_debut)
+            for a, b in zip(cr, cr[1:]):
+                if b.heure_debut < a.heure_fin:
+                    erreurs.append(f"plages {a.id} et {b.id} : les horaires se chevauchent le {j}")
+
+        def implantation_connue(quoi: str, i: str | None):
+            if i and i not in implantations:
+                erreurs.append(f"{quoi} : implantation inconnue « {i} »")
+
+        for l in self.locaux:
+            implantation_connue(f"local {l.id}", l.implantation)
+        for g in self.groupes:
+            implantation_connue(f"groupe {g.id}", g.implantation)
+        for e in self.enseignants:
+            for i in e.implantations:
+                implantation_connue(f"enseignant {e.id}", i)
+            if e.date_debut and e.date_fin and e.date_fin < e.date_debut:
+                erreurs.append(f"enseignant {e.id} : la fin de contrat précède l'engagement")
 
         for e in self.enseignants:
             for d in e.disponibilites:
@@ -270,6 +359,10 @@ class JeuDeDonnees(Strict):
                 erreurs.append(f"module {m.id} : ne peut pas être son propre prérequis")
             for c in m.cours:
                 erreurs += [f"cours {c.id} : ressource inconnue « {r} »" for r in c.ressources if r not in ressources]
+                erreurs += [f"cours {c.id} : local inconnu « {l} »" for l in c.locaux if l not in locaux]
+                implantation_connue(f"cours {c.id}", c.implantation)
+                if c.periodes_distanciel > c.periodes:
+                    erreurs.append(f"cours {c.id} : plus de périodes en distanciel ({c.periodes_distanciel}) que de périodes de cours")
                 for a in c.attributions:
                     erreurs += [f"cours {c.id} : enseignant inconnu « {e} »" for e in a.enseignants if e not in enseignants]
                     erreurs += [f"cours {c.id} : groupe inconnu « {g} » dans une attribution" for g in a.groupes if g not in groupes]

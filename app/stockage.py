@@ -134,6 +134,13 @@ class Stockage:
         return {"id": jid, "cree_le": r["cree_le"], **self._json_clair(r["entete"], f"jeux/entete/{jid}"),
                 "contenu": self._json_clair(r["contenu"], f"jeux/{jid}")}
 
+    def maj_jeu(self, jid: str, entete: dict, contenu: dict) -> None:
+        self._x("UPDATE jeux SET entete=?, contenu=? WHERE id=?", (
+            self._json_chiffre(entete, f"jeux/entete/{jid}"), self._json_chiffre(contenu, f"jeux/{jid}"), jid))
+
+    def maj_horaire(self, hid: str, contenu: dict) -> None:
+        self._x("UPDATE horaires SET contenu=? WHERE id=?", (self._json_chiffre(contenu, f"horaires/{hid}"), hid))
+
     def supprimer_jeu(self, jid: str) -> bool:
         return self._x("DELETE FROM jeux WHERE id=?", (jid,)).rowcount > 0
 

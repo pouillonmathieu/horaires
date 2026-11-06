@@ -17,6 +17,16 @@ def _a(enseignants, periodes, groupes=None):
 
 EXEMPLE = {
     "nom": "Exemple – 2e quadrimestre 2027",
+    "etablissement": {
+        "implantations": [
+            {"id": "CENTRE", "nom": "Site Centre", "adresse": "Rue de l'École 12"},
+            {"id": "NORD", "nom": "Site Nord", "adresse": "Avenue des Métiers 4"},
+        ],
+        "multi_sites_meme_jour": True,
+        "delai_deplacement_min": 45,
+        "enseignants_toutes_implantations": True,
+        "bloc_defaut": "plage",
+    },
     "calendrier": {
         "date_debut": "2027-01-11",
         "date_fin": "2027-06-25",
@@ -27,17 +37,17 @@ EXEMPLE = {
             {"id": "soir", "libelle": "Soir", "heure_debut": "18:00", "heure_fin": "21:20", "periodes": 4},
         ],
         "fermetures": [
-            {"date_debut": "2027-02-15", "date_fin": "2027-02-26", "motif": "Vacances de détente"},
-            {"date_debut": "2027-03-29", "date_fin": "2027-03-29", "motif": "Lundi de Pâques"},
-            {"date_debut": "2027-04-26", "date_fin": "2027-05-07", "motif": "Vacances de printemps"},
-            {"date_debut": "2027-05-17", "date_fin": "2027-05-17", "motif": "Lundi de Pentecôte"},
+            {"date_debut": "2027-02-15", "date_fin": "2027-02-26", "motif": "Vacances de détente", "type": "conges"},
+            {"date_debut": "2027-03-29", "date_fin": "2027-03-29", "motif": "Lundi de Pâques", "type": "ferie"},
+            {"date_debut": "2027-04-26", "date_fin": "2027-05-07", "motif": "Vacances de printemps", "type": "conges"},
+            {"date_debut": "2027-05-17", "date_fin": "2027-05-17", "motif": "Lundi de Pentecôte", "type": "ferie"},
         ],
     },
     "locaux": [
-        {"id": "A101", "nom": "Salle A101", "capacite": 24, "equipements": ["projecteur"]},
-        {"id": "A102", "nom": "Salle A102", "capacite": 16, "equipements": ["projecteur"]},
-        {"id": "INFO1", "nom": "Labo informatique", "capacite": 20, "equipements": ["pc", "projecteur"]},
-        {"id": "SOINS", "nom": "Salle de soins", "capacite": 14, "equipements": ["lit_medicalise"],
+        {"id": "A101", "nom": "Salle A101", "implantation": "CENTRE", "capacite": 24, "equipements": ["projecteur"]},
+        {"id": "A102", "nom": "Salle A102", "implantation": "CENTRE", "capacite": 16, "equipements": ["projecteur"]},
+        {"id": "INFO1", "nom": "Labo informatique", "implantation": "NORD", "capacite": 20, "equipements": ["pc", "projecteur"]},
+        {"id": "SOINS", "nom": "Salle de soins", "implantation": "CENTRE", "capacite": 14, "equipements": ["lit_medicalise"],
          "indisponibilites": [{"date_debut": "2027-06-14", "date_fin": "2027-06-25", "motif": "Travaux"}]},
     ],
     "ressources": [{"id": "mannequin", "nom": "Mannequin de simulation", "quantite": 1}],
@@ -46,11 +56,13 @@ EXEMPLE = {
         {"id": "LAMBERT", "nom": "S. Lambert", "max_periodes_semaine": 16,
          "disponibilites": ["lun:matin", "lun:aprem", "mar:matin", "mar:aprem", "mer:matin", "jeu:matin", "jeu:aprem", "ven:matin"],
          "indisponibilites": [{"date_debut": "2027-04-12", "date_fin": "2027-04-16", "motif": "Formation continue"}]},
-        {"id": "MERTENS", "nom": "A. Mertens", "disponibilites": ["mar:aprem", "mer:aprem", "ven:*"]},
+        {"id": "MERTENS", "nom": "A. Mertens", "disponibilites": ["mar:aprem", "mer:aprem", "ven:*"],
+         "date_fin": "2027-06-04"},  # fin de contrat
         {"id": "PEETERS", "nom": "J. Peeters", "disponibilites": ["lun:soir", "mar:soir", "mer:soir", "jeu:soir"]},
         {"id": "VERMEULEN", "nom": "C. Vermeulen", "disponibilites": ["mar:soir", "jeu:soir"]},
         {"id": "JANSSENS", "nom": "L. Janssens", "disponibilites": ["mar:matin", "jeu:matin", "lun:soir", "mer:soir", "jeu:soir"]},
-        {"id": "CLAES", "nom": "N. Claes", "disponibilites": ["mar:matin", "jeu:matin", "mar:soir"], "max_periodes_semaine": 12},
+        {"id": "CLAES", "nom": "N. Claes", "disponibilites": ["mar:matin", "jeu:matin", "mar:soir"], "max_periodes_semaine": 12,
+         "implantations": ["NORD"]},
     ],
     "modules": [
         {"id": "AS-FOND", "nom": "Fondements du métier d'aide-soignant", "cours": [
@@ -58,7 +70,8 @@ EXEMPLE = {
             _c("AS-FOND-DEO", "Déontologie", 20, [_a("MERTENS", 20)]),
         ]},
         {"id": "AS-COMM", "nom": "Communication professionnelle", "cours": [
-            _c("AS-COMM-1", "Communication", 40, [_a("DUPONT", 40)], max_seances_semaine=1),
+            # séances courtes : blocs de 2 périodes
+            _c("AS-COMM-1", "Communication", 40, [_a("DUPONT", 40)], max_seances_semaine=2, bloc="2"),
         ]},
         {"id": "AS-HYG", "nom": "Hygiène et ergonomie", "prerequis": ["AS-FOND"], "cours": [
             _c("AS-HYG-TH", "Hygiène – théorie", 20, [_a("LAMBERT", 20)]),
@@ -80,10 +93,13 @@ EXEMPLE = {
             _c("CPT-TVA-1", "TVA", 60, [_a("PEETERS", 60)], rythme="fixe"),
         ]},
         {"id": "CPT-FISC", "nom": "Fiscalité des entreprises", "prerequis": ["CPT-TVA"], "cours": [
-            _c("CPT-FISC-1", "Fiscalité", 40, [_a("PEETERS", 40)]),
+            # cours hybride : 12 périodes à distance, sans local
+            _c("CPT-FISC-1", "Fiscalité", 40, [_a("PEETERS", 40)], periodes_distanciel=12),
         ]},
         {"id": "CPT-INFO", "nom": "Logiciel comptable", "cours": [
-            _c("CPT-INFO-1", "Logiciel comptable", 60, [_a("JANSSENS", 60)], equipements=["pc"], max_seances_semaine=1),
+            # donné au labo du site Nord, alors que le groupe est au Centre
+            _c("CPT-INFO-1", "Logiciel comptable", 60, [_a("JANSSENS", 60)], equipements=["pc"], max_seances_semaine=1,
+               implantation="NORD"),
         ]},
         {"id": "INF-WIN", "nom": "Environnement Windows", "cours": [
             _c("INF-WIN-1", "Windows", 40, [_a("JANSSENS", 40)], equipements=["pc"]),
@@ -97,16 +113,20 @@ EXEMPLE = {
     ],
     "groupes": [
         {"id": "AS1", "nom": "Aide-soignant·e (jour)", "effectif": 12, "creneaux": ["matin", "aprem"], "local_prefere": "A102",
+         "implantation": "CENTRE",
          "modules": ["AS-FOND", "AS-COMM", "AS-HYG", "AS-SOINS"],
          "stages": [
              {"date_debut": "2027-03-15", "date_fin": "2027-03-26", "motif": "Stage d'observation"},
              {"date_debut": "2027-05-31", "date_fin": "2027-06-11", "motif": "Stage d'intégration"},
          ]},
         {"id": "CPT", "nom": "Comptabilité (soir)", "effectif": 18, "creneaux": ["soir"], "jours_cours": ["lun", "mar", "mer", "jeu"],
+         "implantation": "CENTRE",
          "local_prefere": "A101", "modules": ["CPT-BASE", "CPT-TVA", "CPT-FISC", "CPT-INFO"]},
         {"id": "CPT2", "nom": "Comptabilité (soir, 2e groupe)", "effectif": 15, "creneaux": ["soir"], "jours_cours": ["mar", "jeu"],
+         "implantation": "CENTRE",
          "modules": ["CPT-BASE"]},
         {"id": "INF", "nom": "Bureautique (matin)", "effectif": 12, "creneaux": ["matin"], "jours_cours": ["mar", "jeu"],
+         "implantation": "NORD",
          "modules": ["INF-WIN", "INF-WORD", "INF-EXCEL"]},
     ],
 }

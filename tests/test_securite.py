@@ -137,3 +137,36 @@ def test_import_csv_multiple(env):
     assert r.json()["nb_cours"] == 14
     r = c.post("/api/jeux", headers=h, files={"fichier": ("export.zip", z, "application/zip")})
     assert r.status_code == 200
+
+
+def test_accueil_modification_et_seance(env):
+    c, *_ = env
+    h = {"X-CSRF-Token": connecter(c)}
+    vierge = {"nom": "Mon école", "etablissement": {"implantations": [{"id": "A"}]},
+              "calendrier": {"date_debut": "2026-09-01", "date_fin": "2027-06-30",
+                             "creneaux": [{"id": "soir", "heure_debut": "18:00", "heure_fin": "21:20", "periodes": 4}]}}
+    r = c.post("/api/jeux/vierge", headers=h, json=vierge)
+    assert r.status_code == 200 and r.json()["version"] == 1
+    jid = c.post("/api/jeux/exemple", headers=h).json()["id"]
+    j = c.get(f"/api/jeux/{jid}").json()
+    d = j["donnees"]
+    d["enseignants"][0]["date_fin"] = "2027-06-01"
+    r = c.put(f"/api/jeux/{jid}/donnees", headers=h, json={"version": j["version"], "donnees": d})
+    assert r.status_code == 200 and r.json()["version"] == j["version"] + 1
+    # une seconde modification sur l'ancienne version est refusée (modification concurrente)
+    assert c.put(f"/api/jeux/{jid}/donnees", headers=h, json={"version": j["version"], "donnees": d}).status_code == 409
+    d["groupes"][0]["modules"] = ["INCONNU"]
+    r = c.put(f"/api/jeux/{jid}/donnees", headers=h, json={"version": j["version"] + 1, "donnees": d})
+    assert r.status_code == 422 and r.json()["detail"]["erreurs"]
+    hid = c.post(f"/api/jeux/{jid}/planifier", headers=h, json={"duree_max_s": 10}).json()["id"]
+    for _ in range(120):
+        x = c.get(f"/api/horaires/{hid}").json()
+        if x["statut"] != "en_cours":
+            break
+        time.sleep(0.5)
+    s = x["contenu"]["seances"][0]
+    assert x["contenu"]["donnees"]["nom"]  # instantané des données dans l'horaire
+    r = c.patch(f"/api/horaires/{hid}/seances/{s['id']}", headers=h, json={"distanciel": True})
+    assert r.status_code == 200 and r.json()["local"] == "Distanciel"
+    r = c.patch(f"/api/horaires/{hid}/seances/{s['id']}", headers=h, json={"distanciel": False})
+    assert r.json()["local"] == s["local"]  # le local libéré est retrouvé

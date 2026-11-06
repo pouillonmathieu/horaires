@@ -40,6 +40,10 @@ Ce sont les données qui changent d'une année ou d'un quadrimestre à l'autre.
 | `ressources` | | `mannequin` | matériel mobile (voir `ressources.csv`) |
 | `max_seances_semaine` | | `2` | |
 | `rythme` | | `fixe` | `fixe` = mêmes jours/heures du début à la fin ; `souple` (défaut) = changements, pauses et reprises permis |
+| `bloc` | | `2` | taille des séances : `plage` (plage entière), `2` à `9` périodes (`8`/`9` = journée complète), `modulable` ; vide = paramètre de l'établissement |
+| `implantation` | | `NORD` | si le cours est donné ailleurs que sur l'implantation du groupe |
+| `locaux` | | `INFO1\|INFO2` | locaux imposés (vide = tout local compatible) |
+| `periodes_distanciel` | | `12` | cours hybride : périodes données à distance, sans local |
 
 ### `attributions.csv` : qui donne quoi
 Une ligne par enseignant et par cours, avec ses périodes.
@@ -60,6 +64,7 @@ Un cours **réparti** entre deux enseignants qui donnent chacun leurs séances s
 | `id` | oui | `G-2027-SOIR` | |
 | `nom` | | `Comptabilité soir` | |
 | `effectif` | oui | `18` | nombre d'inscrits (pas de liste nominative) |
+| `implantation` | | `CENTRE` | implantation où la formation est organisée |
 | `modules` | | `UE-COMPTA-1\|UE-TVA` | ou fichier `parcours.csv` ci-dessous |
 | `date_debut`, `date_fin` | | `14/09/2026` | dates propres au groupe, sinon celles du calendrier |
 
@@ -81,22 +86,25 @@ Un cours **réparti** entre deux enseignants qui donnent chacun leurs séances s
 
 ## Ce qui est saisi une fois puis réutilisé
 
-Ces données n'existent souvent pas dans le logiciel de gestion. Elles sont saisies une fois dans le
-modèle Excel ou CSV. Ensuite, à l'import, choisissez « **Compléter ce qui manque avec** » un jeu
+Ces données n'existent souvent pas dans le logiciel de gestion. Les paramètres généraux (année scolaire,
+plages horaires, blocs, implantations, règles de déplacement) se saisissent dans l'assistant de première
+connexion, puis dans le menu **Paramètres** ; locaux, disponibilités et contrats se complètent dans les
+fiches de l'onglet **Données**, ou une fois dans le modèle Excel ou CSV. Ensuite, à l'import, choisissez « **Compléter ce qui manque avec** » un jeu
 existant : les tables absentes de l'export sont reprises telles quelles. Les colonnes absentes d'une
 table présente (par exemple les disponibilités dans `enseignants.csv`) sont complétées en rapprochant
 les identifiants.
 
 | Fichier | Contenu |
 |---|---|
-| `parametres.csv` | `cle;valeur` : `date_debut`, `date_fin`, `jours_cours` (ex. `lun\|mar\|mer\|jeu\|ven`), `rythme_defaut` |
-| `creneaux.csv` | `id;libelle;heure_debut;heure_fin;periodes` (ex. `soir;Soir;18:00;21:20;4`) |
-| `fermetures.csv` | `date_debut;date_fin;motif` : jours fériés, congés, vacances |
-| `locaux.csv` | `id;nom;capacite;equipements` |
+| `parametres.csv` | `cle;valeur` : `date_debut`, `date_fin` (année scolaire), `jours_cours` (ex. `lun\|mar\|mer\|jeu\|ven\|sam`), `cours_pendant_conges` (oui/non), `rythme_defaut`, `bloc_defaut`, `multi_sites_meme_jour` (oui/non), `delai_deplacement_min`, `enseignants_toutes_implantations` (oui/non), `max_periodes_semaine_defaut` |
+| `implantations.csv` | `id;nom;adresse` : sites de l'établissement (inutile s'il n'y en a qu'un) |
+| `creneaux.csv` | plages horaires : `id;libelle;heure_debut;heure_fin;periodes;jours` (ex. `soir;Soir;18:00;21:20;4;` ou `sam;Samedi;08:00;12:10;5;sam`) |
+| `fermetures.csv` | `date_debut;date_fin;motif;type` : `type` = `ferie` (toujours fermé) ou `conges` (congé scolaire) |
+| `locaux.csv` | `id;nom;implantation;capacite;equipements` |
 | `ressources.csv` | `id;nom;quantite` : matériel mobile partagé |
-| `enseignants.csv` (colonnes en plus) | `disponibilites` (ex. `lun:soir\|mer:*`), `max_periodes_semaine` |
+| `enseignants.csv` (colonnes en plus) | `disponibilites` (ex. `lun:soir\|mer:*`), `max_periodes_semaine`, `implantations`, `date_debut` (engagement), `date_fin` (fin de contrat, pension) |
 | `indisponibilites.csv` | `type;id;date_debut;date_fin;creneaux;motif` (`type` = `enseignant` ou `local`) |
-| `groupes.csv` (colonnes en plus) | `jours_cours`, `creneaux`, `local_prefere` |
+| `groupes.csv` (colonnes en plus) | `jours_cours`, `creneaux` (plages autorisées), `local_prefere` |
 | `stages.csv` | `groupe;date_debut;date_fin;jours;motif` |
 
 ## En pratique

@@ -49,24 +49,77 @@ Domain = sorted_interval_list.Domain
 
 
 # ----------------------------------------------------------------------------- structures
+def _minutes(h: str) -> int:
+    return int(h[:2]) * 60 + int(h[3:])
+
+
+def _hhmm(m: int) -> str:
+    m = 5 * round(m / 5)
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+PAUSE_MAX_JOURNEE_MIN = 90  # une séance « journée complète » peut enjamber la pause de midi, pas celle du soir
+
+
 @dataclass(frozen=True)
+class PeriodeJour:
+    """Une période de cours dans la journée type d'un jour de la semaine."""
+    rang: int  # position dans la journée (0 = première période)
+    plage: Creneau
+    index: int  # position dans la plage
+    debut_min: int
+    fin_min: int
+
+
+@dataclass(eq=False)
 class CreneauHebdo:
+    """Bloc de `n` périodes consécutives, un jour donné de la semaine, à partir de la période `debut`."""
     w: int
     jour_idx: int  # 0 = lundi
-    creneau: Creneau
+    debut: int
+    n: int
+    periodes_jour: tuple[PeriodeJour, ...]
 
     @property
     def jour(self) -> str:
         return JOURS[self.jour_idx]
 
     @property
+    def periodes(self) -> int:
+        return self.n
+
+    @property
+    def plages(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(p.plage.id for p in self.periodes_jour))
+
+    @property
+    def rangs(self) -> range:
+        return range(self.debut, self.debut + self.n)
+
+    @property
+    def debut_min(self) -> int:
+        return self.periodes_jour[0].debut_min
+
+    @property
+    def fin_min(self) -> int:
+        return self.periodes_jour[-1].fin_min
+
+    @property
+    def heure_debut(self) -> str:
+        return _hhmm(self.debut_min)
+
+    @property
+    def heure_fin(self) -> str:
+        return _hhmm(self.fin_min)
+
+    @property
     def libelle(self) -> str:
-        return f"{self.jour} {self.creneau.libelle or self.creneau.id}"
+        return f"{self.jour} {self.heure_debut}–{self.heure_fin}"
 
 
 @dataclass
 class Unite:
-    """Une attribution d'un cours, pour un groupe : la brique que le moteur planifie."""
+    """Une attribution d'un cours, pour un groupe, en présentiel ou à distance : la brique que le moteur planifie."""
     idx: int
     groupe: Groupe
     module: Module
@@ -74,14 +127,27 @@ class Unite:
     part: int
     enseignants: tuple[str, ...]
     periodes: int
+    distanciel: bool = False
+    implantation: str | None = None
+    bloc: str = "plage"
 
     @property
     def cle(self) -> str:
-        return f"{self.groupe.id}/{self.cours.id}/{self.part}"
+        return f"{self.groupe.id}/{self.cours.id}/{self.part}{'/distanciel' if self.distanciel else ''}"
 
 
 def rythme_fixe(ds: JeuDeDonnees, c: Cours) -> bool:
     return (c.rythme or ds.calendrier.rythme_defaut) == "fixe"
+
+
+def _repartir(total: int, poids: list[int]) -> list[int]:
+    """Répartit `total` proportionnellement à `poids` (somme exacte, plus grands restes)."""
+    s = sum(poids)
+    brut = [total * p / s for p in poids]
+    parts = [int(b) for b in brut]
+    for i in sorted(range(len(poids)), key=lambda i: brut[i] - parts[i], reverse=True)[: total - sum(parts)]:
+        parts[i] += 1
+    return [min(p, q) for p, q in zip(parts, poids)]
 
 
 def construire_unites(ds: JeuDeDonnees) -> list[Unite]:
@@ -91,8 +157,16 @@ def construire_unites(ds: JeuDeDonnees) -> list[Unite]:
         for mid in g.modules:
             m = modules[mid]
             for c in m.cours:
-                for i, a in enumerate(c.attributions_pour(g.id)):
-                    out.append(Unite(len(out), g, m, c, i, tuple(a.enseignants), a.periodes))
+                attrs = c.attributions_pour(g.id)
+                dist = _repartir(c.periodes_distanciel, [a.periodes for a in attrs]) if c.periodes_distanciel else [0] * len(attrs)
+                for i, (a, d) in enumerate(zip(attrs, dist)):
+                    commun = dict(groupe=g, module=m, cours=c, part=i, enseignants=tuple(a.enseignants),
+                                  implantation=c.implantation or g.implantation,
+                                  bloc=c.bloc or ds.etablissement.bloc_defaut)
+                    if a.periodes - d > 0:
+                        out.append(Unite(len(out), periodes=a.periodes - d, **commun))
+                    if d > 0:
+                        out.append(Unite(len(out), periodes=d, distanciel=True, **commun))
     return out
 
 
@@ -100,56 +174,136 @@ def dispo_hebdo(e: Enseignant, jour: str, creneau_id: str) -> bool:
     return not e.disponibilites or f"{jour}:{creneau_id}" in e.disponibilites or f"{jour}:*" in e.disponibilites
 
 
-def locaux_eligibles(ds: JeuDeDonnees, g: Groupe, c: Cours) -> list[Local]:
-    ok = [l for l in ds.locaux if l.capacite >= g.effectif and set(c.equipements) <= set(l.equipements)]
+def va_sur_implantation(ds: JeuDeDonnees, e: Enseignant, implantation: str | None) -> bool:
+    if implantation is None:
+        return True
+    if e.implantations:
+        return implantation in e.implantations
+    return ds.etablissement.enseignants_toutes_implantations
+
+
+def locaux_eligibles(ds: JeuDeDonnees, g: Groupe, c: Cours, implantation: str | None = None) -> list[Local]:
+    ok = [l for l in ds.locaux
+          if l.capacite >= g.effectif and set(c.equipements) <= set(l.equipements)
+          and (not c.locaux or l.id in c.locaux)
+          and (implantation is None or l.implantation in (None, implantation))]
     # local attitré d'abord, puis le plus petit local suffisant (on garde les grandes salles libres)
     return sorted(ok, key=lambda l: (l.id != g.local_prefere, l.capacite, l.id))
 
 
+def eligibles_unite(ds: JeuDeDonnees, u: Unite) -> frozenset[str]:
+    if u.distanciel:
+        return frozenset()
+    return frozenset(l.id for l in locaux_eligibles(ds, u.groupe, u.cours, u.implantation))
+
+
 class Horizon:
-    """Découpage du calendrier en semaines × créneaux hebdomadaires, avec disponibilités datées."""
+    """Découpage du calendrier en semaines × jours × périodes, avec disponibilités datées."""
 
     def __init__(self, ds: JeuDeDonnees):
         self.ds = ds
         cal = ds.calendrier
         self.lundi0 = cal.date_debut - timedelta(days=cal.date_debut.weekday())
         self.T = (cal.date_fin - self.lundi0).days // 7 + 1
-        creneaux = sorted(cal.creneaux, key=lambda c: c.heure_debut)
-        jours = [JOURS.index(j) for j in JOURS if j in cal.jours_cours]
-        self.creneaux_hebdo = [CreneauHebdo(i, j, c) for i, (j, c) in enumerate((j, c) for j in jours for c in creneaux)]
+        self.jours = [JOURS.index(j) for j in JOURS if j in cal.jours_cours]
+        self.journee: dict[int, list[PeriodeJour]] = {}
+        for j in self.jours:
+            periodes = []
+            for pl in sorted((c for c in cal.creneaux if c.ouverte(JOURS[j])), key=lambda c: c.heure_debut):
+                d0, d1 = _minutes(pl.heure_debut), _minutes(pl.heure_fin)
+                for k in range(pl.periodes):
+                    periodes.append(PeriodeJour(len(periodes), pl, k, round(d0 + k * (d1 - d0) / pl.periodes),
+                                                round(d0 + (k + 1) * (d1 - d0) / pl.periodes)))
+            self.journee[j] = periodes
+        self._creneaux: dict[tuple[int, int, int], CreneauHebdo] = {}
+        self.creneaux_hebdo: list[CreneauHebdo] = []
         self.enseignants = {e.id: e for e in ds.enseignants}
+        self._ouvert = {j: [cal.date_debut <= self.date_jour(t, j) <= cal.date_fin and not cal.ferme(self.date_jour(t, j))
+                            for t in range(self.T)] for j in self.jours}
         self._cache_base: dict = {}
         self._cache_unite: dict = {}
 
+    # -- blocs possibles
+    def positions(self, jour_idx: int, bloc: str, sans_chevauchement: bool = False) -> list[tuple[int, int]]:
+        """(période de début, nombre de périodes) des séances possibles ce jour-là pour une taille de bloc."""
+        periodes = self.journee[jour_idx]
+        plages: list[tuple[int, int]] = []  # (rang de début, longueur) de chaque plage
+        for p in periodes:
+            if p.index == 0:
+                plages.append((p.rang, p.plage.periodes))
+        out: list[tuple[int, int]] = []
+
+        def paver(r0: int, L: int, n: int):
+            if n > L:
+                return
+            out.extend((r0 + k * n, n) for k in range(L // n))
+            if not sans_chevauchement and L % n:
+                out.append((r0 + L - n, n))
+
+        for r0, L in plages:
+            if bloc == "plage":
+                out.append((r0, L))
+            elif bloc == "modulable":
+                for n in sorted({L, (L + 1) // 2, L // 2} - {0}, reverse=True):
+                    paver(r0, L, n)
+                    if sans_chevauchement:
+                        break
+            else:
+                paver(r0, L, int(bloc))
+        if bloc not in ("plage", "modulable"):
+            # blocs plus longs qu'une plage : plages entières consécutives, séparées au plus par une pause de midi
+            n = int(bloc)
+            for i, (r0, _) in enumerate(plages):
+                total, fin_prec = 0, None
+                for r, L in plages[i:]:
+                    if fin_prec is not None and periodes[r].debut_min - fin_prec > PAUSE_MAX_JOURNEE_MIN:
+                        break
+                    total += L
+                    fin_prec = periodes[r + L - 1].fin_min
+                    if total >= n:
+                        break
+                if total == n and n > plages[i][1]:
+                    out.append((r0, n))
+        return sorted(set(out))
+
+    def creneau(self, jour_idx: int, debut: int, n: int) -> CreneauHebdo:
+        cle = (jour_idx, debut, n)
+        if cle not in self._creneaux:
+            ch = CreneauHebdo(-1, jour_idx, debut, n, tuple(self.journee[jour_idx][debut:debut + n]))
+            self._creneaux[cle] = ch
+        return self._creneaux[cle]
+
+    def creneaux_unite(self, u: Unite) -> list[CreneauHebdo]:
+        return [self.creneau(j, d, n) for j in self.jours for d, n in self.positions(j, u.bloc)]
+
+    def numeroter(self) -> None:
+        """Numérote les créneaux utilisés dans l'ordre chronologique (sert aux rangs des prérequis)."""
+        self.creneaux_hebdo = sorted(self._creneaux.values(), key=lambda c: (c.jour_idx, c.debut, c.n))
+        for w, ch in enumerate(self.creneaux_hebdo):
+            ch.w = w
+
+    # -- dates et disponibilités
+    def date_jour(self, t: int, jour_idx: int) -> date:
+        return self.lundi0 + timedelta(days=7 * t + jour_idx)
+
     def date(self, t: int, ch: CreneauHebdo) -> date:
-        return self.lundi0 + timedelta(days=7 * t + ch.jour_idx)
+        return self.date_jour(t, ch.jour_idx)
 
     def semaine_de(self, d: date) -> int:
         return (d - self.lundi0).days // 7
 
-    @cached_property
-    def _ouvert(self) -> list[list[bool]]:
-        cal = self.ds.calendrier
-        res = []
-        for ch in self.creneaux_hebdo:
-            ligne = []
-            for t in range(self.T):
-                d = self.date(t, ch)
-                ligne.append(cal.date_debut <= d <= cal.date_fin and not any(f.contient(d) for f in cal.fermetures))
-            res.append(ligne)
-        return res
-
     def groupe_autorise(self, g: Groupe, ch: CreneauHebdo) -> bool:
-        return ch.jour in (g.jours_cours or self.ds.calendrier.jours_cours) and (not g.creneaux or ch.creneau.id in g.creneaux)
+        return ch.jour in (g.jours_cours or self.ds.calendrier.jours_cours) and (
+            not g.creneaux or all(p in g.creneaux for p in ch.plages))
 
     def base_groupe(self, g: Groupe, ch: CreneauHebdo) -> list[int]:
-        cle = (g.id, ch.w)
+        cle = (g.id, ch.jour_idx)
         if cle not in self._cache_base:
             ligne = []
             for t in range(self.T):
                 d = self.date(t, ch)
-                ok = (self._ouvert[ch.w][t] and (not g.date_debut or d >= g.date_debut) and (not g.date_fin or d <= g.date_fin)
-                      and not any(s.bloque(d) for s in g.stages))
+                ok = (self._ouvert[ch.jour_idx][t] and (not g.date_debut or d >= g.date_debut)
+                      and (not g.date_fin or d <= g.date_fin) and not any(s.bloque(d) for s in g.stages))
                 ligne.append(int(ok))
             self._cache_base[cle] = ligne
         return self._cache_base[cle]
@@ -161,9 +315,9 @@ class Horizon:
         if not avec_enseignants:
             return self.base_groupe(u.groupe, ch)
         ens = [self.enseignants[e] for e in u.enseignants]
-        if not all(dispo_hebdo(e, ch.jour, ch.creneau.id) for e in ens):
+        if not all(dispo_hebdo(e, ch.jour, p) for e in ens for p in ch.plages):
             return None
-        cle = (u.groupe.id, u.enseignants, ch.w)
+        cle = (u.groupe.id, u.enseignants, ch.jour_idx, ch.plages)
         if cle not in self._cache_unite:
             base = self.base_groupe(u.groupe, ch)
             ligne = []
@@ -171,13 +325,32 @@ class Horizon:
                 ok = base[t]
                 if ok:
                     d = self.date(t, ch)
-                    ok = not any(i.bloque(d, ch.creneau.id) for e in ens for i in e.indisponibilites)
+                    ok = all(e.sous_contrat(d) for e in ens) and not any(
+                        i.bloque(d, p) for e in ens for i in e.indisponibilites for p in ch.plages)
                 ligne.append(int(ok))
             self._cache_unite[cle] = ligne
         return self._cache_unite[cle]
 
     def local_bloque(self, l: Local, ch: CreneauHebdo) -> list[int]:
-        return [t for t in range(self.T) if any(i.bloque(self.date(t, ch), ch.creneau.id) for i in l.indisponibilites)]
+        if not l.indisponibilites:
+            return []
+        return [t for t in range(self.T) if any(i.bloque(self.date(t, ch), p) for i in l.indisponibilites for p in ch.plages)]
+
+    def structure(self) -> dict:
+        """Journée type de chaque jour de cours (pour l'affichage des grilles)."""
+        return {JOURS[j]: [{"rang": p.rang, "plage": p.plage.id, "libelle": p.plage.libelle or p.plage.id,
+                            "debut": _hhmm(p.debut_min), "fin": _hhmm(p.fin_min)} for p in ps]
+                for j, ps in self.journee.items()}
+
+
+def creneaux_incompatibles(ds: JeuDeDonnees, a: CreneauHebdo, b: CreneauHebdo) -> bool:
+    """Deux séances sur des implantations différentes, le même jour : le même enseignant peut-il assurer les deux ?"""
+    if a.jour_idx != b.jour_idx:
+        return False
+    if not ds.etablissement.multi_sites_meme_jour:
+        return True
+    premier, second = (a, b) if a.debut_min <= b.debut_min else (b, a)
+    return second.debut_min - premier.fin_min < ds.etablissement.delai_deplacement_min
 
 
 # ----------------------------------------------------------------------------- paramètres / résultat
@@ -199,10 +372,12 @@ class Resultat:
     synthese: list[dict] = field(default_factory=list)
     alertes: list[str] = field(default_factory=list)
     statistiques: dict = field(default_factory=dict)
+    structure: dict = field(default_factory=dict)
 
     def en_dict(self) -> dict:
         return {"statut": self.statut, "duree_s": round(self.duree_s, 2), "seances": self.seances,
-                "synthese": self.synthese, "alertes": self.alertes, "statistiques": self.statistiques}
+                "synthese": self.synthese, "alertes": self.alertes, "statistiques": self.statistiques,
+                "structure_jours": self.structure}
 
 
 @dataclass
@@ -232,6 +407,21 @@ class _Place:
     locaux_par_semaine: dict[int, str | None] = field(default_factory=dict)
 
 
+def _ajouter_no_overlap(mdl: cp_model.CpModel, groupes: dict) -> int:
+    """Une contrainte NoOverlap par ensemble distinct d'intervalles (les périodes voisines partagent souvent le même)."""
+    vus, n = set(), 0
+    for ivs in groupes.values():
+        if len(ivs) < 2:
+            continue
+        cle = frozenset(iv.Index() for iv in ivs)
+        if cle in vus:
+            continue
+        vus.add(cle)
+        mdl.AddNoOverlap(ivs)
+        n += 1
+    return n
+
+
 # ----------------------------------------------------------------------------- moteur
 def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     params = params or Parametres()
@@ -240,27 +430,40 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     unites = construire_unites(ds)
     T = hz.T
     res_par_id = {r.id: r for r in ds.ressources}
-    eligibles = {u.idx: frozenset(l.id for l in locaux_eligibles(ds, u.groupe, u.cours)) for u in unites}
+    ens_par_id = {e.id: e for e in ds.enseignants}
+    eligibles = {u.idx: eligibles_unite(ds, u) for u in unites}
+    alertes = []
+
+    # créneaux possibles de chaque unité (numérotés chronologiquement avant de créer les variables)
+    possibles: dict[int, list[tuple[CreneauHebdo, list[int]]]] = {}
+    for u in unites:
+        if (not u.distanciel and not eligibles[u.idx]) or any(res_par_id[r].quantite == 0 for r in u.cours.ressources):
+            continue
+        if not u.distanciel and not all(va_sur_implantation(ds, ens_par_id[e], u.implantation) for e in u.enseignants):
+            continue
+        liste = []
+        for ch in hz.creneaux_unite(u):
+            dispo = hz.dispo_unite(u, ch)
+            if dispo and any(dispo):
+                liste.append((ch, dispo))
+        possibles[u.idx] = liste
+    hz.numeroter()
+    W = max(1, len(hz.creneaux_hebdo))
 
     mdl = cp_model.CpModel()
     vars_uw: list[_Var] = []
     par_unite: dict[int, list[_Var]] = defaultdict(list)
-    nogroupe = defaultdict(list)
+    nogroupe = defaultdict(list)  # (groupe, jour, période) -> intervalles
     noens = defaultdict(list)
     cumul_ens = defaultdict(lambda: ([], []))
-    cumul_res = defaultdict(list)
+    cumul_res = defaultdict(list)  # (ressource, jour, période) -> intervalles
 
     fixe = {u.idx: rythme_fixe(ds, u.cours) for u in unites}
     for u in unites:
-        if not eligibles[u.idx] or any(res_par_id[r].quantite == 0 for r in u.cours.ressources):
-            continue
         K = 1 if fixe[u.idx] else max(1, params.segments_souple)
-        for ch in hz.creneaux_hebdo:
-            dispo = hz.dispo_unite(u, ch)
-            if not dispo or not any(dispo):
-                continue
+        for ch, dispo in possibles.get(u.idx, []):
             semaines = [t for t in range(T) if dispo[t]]
-            pw = ch.creneau.periodes
+            pw = ch.periodes
             n_max = min(len(semaines), math.ceil(u.periodes / pw))
             cumul = [0]
             for a in dispo:
@@ -290,14 +493,16 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
                 precedent = v
                 vars_uw.append(v)
                 par_unite[u.idx].append(v)
-                nogroupe[(u.groupe.id, ch.w)].append(iv)
+                for r in ch.rangs:
+                    nogroupe[(u.groupe.id, ch.jour_idx, r)].append(iv)
+                    for ens in u.enseignants:
+                        noens[(ens, ch.jour_idx, r)].append(iv)
+                    for rs in u.cours.ressources:
+                        cumul_res[(rs, ch.jour_idx, r)].append(iv)
                 for ens in u.enseignants:
-                    noens[(ens, ch.w)].append(iv)
                     ivs, dem = cumul_ens[ens]
                     ivs.append(iv)
                     dem.append(pw)
-                for r in u.cours.ressources:
-                    cumul_res[(r, ch.w)].append(iv)
 
     # rythme fixe : tous les créneaux hebdomadaires du cours commencent la même semaine
     # et se terminent ensemble (à une semaine près, pour ne pas dépasser le volume prévu)
@@ -311,33 +516,56 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
                 mdl.Add(v.fin <= ef).OnlyEnforceIf(v.present)
                 mdl.Add(v.fin >= ef - 1).OnlyEnforceIf(v.present)
 
-    for groupe in (nogroupe, noens):
-        for ivs in groupe.values():
-            if len(ivs) > 1:
-                mdl.AddNoOverlap(ivs)
-    for (rid, _w), ivs in cumul_res.items():
-        if len(ivs) > res_par_id[rid].quantite:
+    nb_no = _ajouter_no_overlap(mdl, nogroupe) + _ajouter_no_overlap(mdl, noens)
+    vus = set()
+    for (rid, _j, _r), ivs in cumul_res.items():
+        cle = (rid, frozenset(iv.Index() for iv in ivs))
+        if len(ivs) > res_par_id[rid].quantite and cle not in vus:
+            vus.add(cle)
             mdl.AddCumulative(ivs, [1] * len(ivs), res_par_id[rid].quantite)
     for e in ds.enseignants:
-        if e.max_periodes_semaine is not None and e.id in cumul_ens:
+        plafond = e.max_periodes_semaine if e.max_periodes_semaine is not None else ds.etablissement.max_periodes_semaine_defaut
+        if plafond is not None and e.id in cumul_ens:
             ivs, dem = cumul_ens[e.id]
-            mdl.AddCumulative(ivs, dem, e.max_periodes_semaine)
+            mdl.AddCumulative(ivs, dem, plafond)
 
-    # capacité en locaux (conditions de Hall) : pour chaque ensemble de salles admissibles E,
-    # les cours qui ne peuvent aller que dans E ne dépassent jamais |E| salles en même temps.
+    # déplacements entre implantations : un enseignant ne peut pas enchaîner deux sites trop rapprochés
+    nb_deplacements = 0
+    if len(ds.etablissement.implantations) > 1:
+        par_ens = defaultdict(list)
+        for v in vars_uw:
+            if not v.u.distanciel and v.u.implantation:
+                for e in v.u.enseignants:
+                    par_ens[(e, v.ch.jour_idx)].append(v)
+        for vs in par_ens.values():
+            for i, a in enumerate(vs):
+                for b in vs[i + 1:]:
+                    if a.u.implantation != b.u.implantation and creneaux_incompatibles(ds, a.ch, b.ch) \
+                            and not set(a.ch.rangs) & set(b.ch.rangs):
+                        mdl.AddNoOverlap([a.intervalle, b.intervalle])
+                        nb_deplacements += 1
+
+    # capacité en locaux (conditions de Hall), période par période : les cours qui ne peuvent aller
+    # que dans l'ensemble de salles E ne dépassent jamais |E| salles en même temps.
     locaux_par_id = {l.id: l for l in ds.locaux}
-    par_w = defaultdict(list)
+    par_periode = defaultdict(list)
     for v in vars_uw:
-        par_w[v.ch.w].append(v)
-    nb_hall = 0
-    for w, vs in par_w.items():
-        ch = hz.creneaux_hebdo[w]
+        if not v.u.distanciel:
+            for r in v.ch.rangs:
+                par_periode[(v.ch.jour_idx, r)].append(v)
+    nb_hall, vus = 0, set()
+    for (j, r), vs in par_periode.items():
         ensembles = {eligibles[v.u.idx] for v in vs}
         ensembles.add(frozenset().union(*ensembles))
-        bloques = {r: hz.local_bloque(locaux_par_id[r], ch) for r in frozenset().union(*ensembles)}
+        ch_ref = hz.creneau(j, r, 1)
+        bloques = {l: hz.local_bloque(locaux_par_id[l], ch_ref) for l in frozenset().union(*ensembles)}
         for E in ensembles:
             ivs = [v.intervalle for v in vs if eligibles[v.u.idx] <= E]
-            fixes = [mdl.NewIntervalVar(t, 1, t + 1, "") for r in E for t in bloques[r]]
+            cle = (E, frozenset(iv.Index() for iv in ivs))
+            if cle in vus:
+                continue
+            vus.add(cle)
+            fixes = [mdl.NewIntervalVar(t, 1, t + 1, "") for l in E for t in bloques[l]]
             if len(ivs) + len(fixes) > len(E):
                 mdl.AddCumulative(ivs + fixes, [1] * (len(ivs) + len(fixes)), len(E))
                 nb_hall += 1
@@ -345,7 +573,6 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     # volumes, bornes temporelles, rythme hebdomadaire.
     # Les bornes sont exprimées en « rang de créneau » = semaine × W + créneau hebdomadaire (ordre chronologique),
     # ce qui permet d'enchaîner deux modules dans la même semaine.
-    W = len(hz.creneaux_hebdo)
     manque, debut_u, fin_u = {}, {}, {}
     for u in unites:
         vs = par_unite.get(u.idx, [])
@@ -356,9 +583,9 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
         if not vs:
             mdl.Add(m == u.periodes)
             continue
-        livre = sum(v.ch.creneau.periodes * v.nb for v in vs)
+        livre = sum(v.ch.periodes * v.nb for v in vs)
         mdl.Add(livre + m >= u.periodes)
-        mdl.Add(livre <= u.periodes + max(v.ch.creneau.periodes for v in vs) - 1)
+        mdl.Add(livre <= u.periodes + max(v.ch.periodes for v in vs) - 1)
         for v in vs:
             mdl.Add(du <= v.debut * W + v.ch.w).OnlyEnforceIf(v.present)
             mdl.Add(fu >= (v.fin - 1) * W + v.ch.w).OnlyEnforceIf(v.present)
@@ -375,7 +602,6 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
             fin_m[k] = mdl.NewIntVar(0, T * W, f"fm_{u.groupe.id}_{u.module.id}")
         mdl.Add(debut_m[k] <= debut_u[u.idx])
         mdl.Add(fin_m[k] >= fin_u[u.idx])
-    alertes = []
     for g in ds.groupes:
         for mid in g.modules:
             for pre in ds.module(mid).prerequis:
@@ -386,7 +612,13 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
                     alertes.append(f"Groupe {g.id} : le prérequis {pre} de {mid} ne fait pas partie du parcours ; supposé acquis.")
 
     stats = {"unites": len(unites), "variables_hebdo": len(vars_uw), "semaines": T,
-             "creneaux_hebdo": len(hz.creneaux_hebdo), "contraintes_locaux": nb_hall}
+             "creneaux_hebdo": len(hz.creneaux_hebdo), "contraintes_non_chevauchement": nb_no,
+             "contraintes_locaux": nb_hall, "contraintes_deplacement": nb_deplacements}
+    if not vars_uw:
+        res = Resultat("OPTIMAL" if not unites else "REALISABLE", time.monotonic() - t0, alertes=alertes,
+                       statistiques=stats, structure=hz.structure())
+        _lire_solution(hz, unites, [], res)
+        return res
     D = params.duree_max_s
 
     # ---- point de départ : heuristique constructive
@@ -463,11 +695,11 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     stats["phase_locaux"] = {"duree_s": round(time.monotonic() - t_b, 1), "seances_sans_local": sans_local}
     if sans_local:
         alertes.append(f"{sans_local} séance(s) sans local disponible : voir « À attribuer » dans l'horaire.")
-    changements = sum(1 for p in places if p.local is None)
+    changements = sum(1 for p in places if p.local is None and not p.u.distanciel)
     if changements:
         alertes.append(f"{changements} cours changent de local certaines semaines (aucun local libre sur toute leur durée).")
 
-    resultat = Resultat(statut, time.monotonic() - t0, alertes=alertes, statistiques=stats)
+    resultat = Resultat(statut, time.monotonic() - t0, alertes=alertes, statistiques=stats, structure=hz.structure())
     _lire_solution(hz, unites, places, resultat)
     return resultat
 
@@ -506,7 +738,7 @@ def _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, deb
             e, nb = s + 1, 0
         h.update({v.present: int(bool(sol)), v.debut: s, v.fin: e, v.taille: e - s,
                   v.cs: v.cumul[s], v.ce: v.cumul[e], v.nb: nb})
-        livre[v.u.idx] += nb * v.ch.creneau.periodes
+        livre[v.u.idx] += nb * v.ch.periodes
     for i, sf in debut_fixe.items():
         sem = semaines.get(i)
         h[sf] = sem[0][0] if sem else 0
@@ -608,31 +840,33 @@ def _reparer(mdl, vars_uw, par_unite, unites, manque, sol, echeance: float, para
 
 def _attribuer_locaux(hz: Horizon, ds: JeuDeDonnees, places: list[_Place], eligibles, params: Parametres,
                       budget_s: float) -> int:
-    """Attribue un local fixe à chaque (cours, créneau hebdomadaire), créneau par créneau."""
+    """Attribue un local fixe à chaque (cours, créneau hebdomadaire), jour de la semaine par jour."""
     locaux = {l.id: l for l in ds.locaux}
-    par_w = defaultdict(list)
+    par_jour = defaultdict(list)
     for p in places:
-        par_w[p.ch.w].append(p)
+        if not p.u.distanciel:
+            par_jour[p.ch.jour_idx].append(p)
     sans_local = 0
     debut = time.monotonic()
-    for i, (w, ps) in enumerate(sorted(par_w.items())):
-        ch = hz.creneaux_hebdo[w]
-        bloques = {r: set(hz.local_bloque(l, ch)) for r, l in locaux.items() if l.indisponibilites}
+    for i, (j, ps) in enumerate(sorted(par_jour.items())):
+        bloques = {(r, k): set(hz.local_bloque(locaux[r], p.ch)) for k, p in enumerate(ps)
+                   for r in eligibles[p.u.idx] if locaux[r].indisponibilites}
         mdl = cp_model.CpModel()
         x = {}
-        occupation = defaultdict(list)  # (local, semaine) -> [bool]
+        occupation = defaultdict(list)  # (local, période, semaine) -> [bool]
         cout = []
         non_aff = []
         for k, p in enumerate(ps):
             lits = []
             for r in eligibles[p.u.idx]:
-                if bloques.get(r) and bloques[r] & set(p.semaines):
+                if bloques.get((r, k)) and bloques[(r, k)] & set(p.semaines):
                     continue
                 b = mdl.NewBoolVar("")
                 x[(k, r)] = b
                 lits.append(b)
-                for t in p.semaines:
-                    occupation[(r, t)].append(b)
+                for rang in p.ch.rangs:
+                    for t in p.semaines:
+                        occupation[(r, rang, t)].append(b)
                 l = locaux[r]
                 penal = (l.capacite - p.u.groupe.effectif) // 4
                 if p.u.groupe.local_prefere and r != p.u.groupe.local_prefere:
@@ -644,33 +878,39 @@ def _attribuer_locaux(hz: Horizon, ds: JeuDeDonnees, places: list[_Place], eligi
             n = mdl.NewBoolVar("")
             non_aff.append(n)
             mdl.AddExactlyOne(lits + [n])
+        vus = set()
         for lits in occupation.values():
-            if len(lits) > 1:
+            cle = frozenset(b.Index() for b in lits)
+            if len(lits) > 1 and cle not in vus:
+                vus.add(cle)
                 mdl.AddAtMostOne(lits)
         mdl.Minimize(100_000 * sum(non_aff) + sum(cout))
         sv = cp_model.CpSolver()
         sv.parameters.num_workers = params.nb_threads
         reste = budget_s - (time.monotonic() - debut)
-        sv.parameters.max_time_in_seconds = max(1.0, reste / max(1, len(par_w) - i))
+        sv.parameters.max_time_in_seconds = max(1.0, reste / max(1, len(par_jour) - i))
         st = sv.Solve(mdl)
         ok = st in (cp_model.OPTIMAL, cp_model.FEASIBLE)
-        utilises = defaultdict(set)  # semaine -> locaux pris
+        utilises = defaultdict(set)  # (période, semaine) -> locaux pris
         for k, p in enumerate(ps):
             r = next((r for r in eligibles[p.u.idx] if (k, r) in x and ok and sv.Value(x[(k, r)])), None)
             p.local = r
             if r:
-                for t in p.semaines:
-                    utilises[t].add(r)
+                for rang in p.ch.rangs:
+                    for t in p.semaines:
+                        utilises[(rang, t)].add(r)
         # repli : local variable selon la semaine pour les cours restés sans local fixe
-        for p in ps:
+        for k, p in enumerate(ps):
             if p.local:
                 continue
             for t in p.semaines:
                 choix = next((r for r in sorted(eligibles[p.u.idx], key=lambda r: locaux[r].capacite)
-                              if r not in utilises[t] and t not in bloques.get(r, ())), None)
+                              if all(r not in utilises[(rang, t)] for rang in p.ch.rangs)
+                              and t not in bloques.get((r, k), ())), None)
                 p.locaux_par_semaine[t] = choix
                 if choix:
-                    utilises[t].add(choix)
+                    for rang in p.ch.rangs:
+                        utilises[(rang, t)].add(choix)
                 else:
                     sans_local += 1
     return sans_local
@@ -688,19 +928,23 @@ def _lire_solution(hz: Horizon, unites: list[Unite], places: list[_Place], res: 
                 hebdo.append(p.ch.libelle)
             for t in p.semaines:
                 d = hz.date(t, p.ch)
-                local = p.local or p.locaux_par_semaine.get(t)
-                locaux.add(local or "À attribuer")
-                livre += p.ch.creneau.periodes
+                if u.distanciel:
+                    local = "Distanciel"
+                else:
+                    local = p.local or p.locaux_par_semaine.get(t) or "À attribuer"
+                locaux.add(local)
+                livre += p.ch.periodes
                 dates.append(d.isoformat())
                 res.seances.append({
-                    "date": d.isoformat(), "jour": p.ch.jour, "creneau": p.ch.creneau.id,
-                    "heure_debut": p.ch.creneau.heure_debut, "heure_fin": p.ch.creneau.heure_fin,
-                    "periodes": p.ch.creneau.periodes,
+                    "date": d.isoformat(), "jour": p.ch.jour, "creneau": "+".join(p.ch.plages),
+                    "debut_periode": p.ch.debut, "periodes": p.ch.periodes,
+                    "heure_debut": p.ch.heure_debut, "heure_fin": p.ch.heure_fin,
                     "groupe": u.groupe.id, "groupe_nom": u.groupe.nom,
                     "module": u.module.id, "module_nom": u.module.nom,
                     "cours": u.cours.id, "cours_nom": u.cours.nom,
                     "enseignants": list(u.enseignants), "enseignant": " + ".join(u.enseignants),
-                    "local": local or "À attribuer",
+                    "implantation": None if u.distanciel else u.implantation,
+                    "distanciel": u.distanciel, "local": local,
                 })
         dates.sort()
         res.synthese.append({
@@ -708,6 +952,7 @@ def _lire_solution(hz: Horizon, unites: list[Unite], places: list[_Place], res: 
             "cours": u.cours.id, "cours_nom": u.cours.nom,
             "enseignants": list(u.enseignants), "enseignant": " + ".join(u.enseignants),
             "enseignant_noms": " + ".join(noms_ens[e] for e in u.enseignants),
+            "distanciel": u.distanciel, "implantation": u.implantation, "bloc": u.bloc,
             "periodes_requises": u.periodes, "periodes_planifiees": livre,
             "periodes_manquantes": max(0, u.periodes - livre),
             "creneaux_hebdo": hebdo, "locaux": sorted(locaux),
@@ -715,3 +960,5 @@ def _lire_solution(hz: Horizon, unites: list[Unite], places: list[_Place], res: 
             "nb_seances": len(dates),
         })
     res.seances.sort(key=lambda s: (s["date"], s["heure_debut"], s["groupe"]))
+    for i, s in enumerate(res.seances):
+        s["id"] = i

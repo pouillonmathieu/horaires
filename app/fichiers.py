@@ -24,16 +24,19 @@ MAX_DECOMPRESSE = 50 * 1024 * 1024  # protection contre les « zip bombs »
 
 ONGLETS: dict[str, list[str]] = {
     "Parametres": ["cle", "valeur"],
-    "Creneaux": ["id", "libelle", "heure_debut", "heure_fin", "periodes"],
-    "Fermetures": ["date_debut", "date_fin", "motif"],
-    "Locaux": ["id", "nom", "capacite", "equipements"],
+    "Implantations": ["id", "nom", "adresse"],
+    "Creneaux": ["id", "libelle", "heure_debut", "heure_fin", "periodes", "jours"],
+    "Fermetures": ["date_debut", "date_fin", "motif", "type"],
+    "Locaux": ["id", "nom", "implantation", "capacite", "equipements"],
     "Ressources": ["id", "nom", "quantite"],
-    "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine"],
+    "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine", "implantations", "date_debut", "date_fin"],
     "Indisponibilites": ["type", "id", "date_debut", "date_fin", "creneaux", "motif"],
     "Modules": ["id", "nom", "prerequis"],
-    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine", "rythme"],
+    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine", "rythme", "bloc",
+              "implantation", "locaux", "periodes_distanciel"],
     "Attributions": ["cours", "enseignants", "periodes", "groupes"],
-    "Groupes": ["id", "nom", "effectif", "modules", "jours_cours", "creneaux", "date_debut", "date_fin", "local_prefere"],
+    "Groupes": ["id", "nom", "effectif", "modules", "implantation", "jours_cours", "creneaux", "date_debut", "date_fin",
+                "local_prefere"],
     "Stages": ["groupe", "date_debut", "date_fin", "jours", "motif"],
     # Formats « une ligne par lien » (facultatifs), plus proches d'un export de base de données :
     "Parcours": ["groupe", "module"],
@@ -41,21 +44,28 @@ ONGLETS: dict[str, list[str]] = {
 }
 
 AIDE = {
-    "Parametres": "nom, date_debut, date_fin (AAAA-MM-JJ ou JJ/MM/AAAA), jours_cours (ex. lun;mar;mer;jeu;ven), "
-                  "rythme_defaut (souple ou fixe)",
-    "Creneaux": "Plages horaires d'une journée. « periodes » = nombre de périodes de cours du créneau.",
-    "Fermetures": "Jours fériés, congés et vacances (une ligne par période ; un jour isolé : début = fin).",
-    "Locaux": "Capacité en places assises ; équipements fixes séparés par « ; » (ex. pc;projecteur).",
+    "Parametres": "nom, date_debut, date_fin (année scolaire), jours_cours (ex. lun;mar;mer;jeu;ven;sam), "
+                  "cours_pendant_conges (oui/non), rythme_defaut (souple/fixe), bloc_defaut (plage, 2, 3, 4, 5, 6, 8, 9, "
+                  "modulable), multi_sites_meme_jour (oui/non), delai_deplacement_min, enseignants_toutes_implantations "
+                  "(oui/non), max_periodes_semaine_defaut",
+    "Implantations": "Sites de l'établissement (laisser vide s'il n'y en a qu'un).",
+    "Creneaux": "Plages horaires (matin, après-midi, soir…) et leur nombre de périodes. « jours » : seulement ces "
+                "jours (ex. sam pour une plage du samedi) ; vide = tous les jours de cours.",
+    "Fermetures": "type : ferie (toujours fermé) ou conges (congé scolaire, ouvert si cours_pendant_conges = oui).",
+    "Locaux": "Implantation, capacité en places assises, équipements fixes séparés par « ; » (ex. pc;projecteur).",
     "Ressources": "Matériel mobile partagé, en nombre d'unités (1 unité mobilisée par séance).",
-    "Enseignants": "Disponibilités : jour:creneau séparés par « ; » (ex. lun:soir;mer:*). Vide = toujours disponible.",
+    "Enseignants": "Disponibilités : jour:plage séparés par « ; » (ex. lun:soir;mer:*), vide = toujours. Implantations "
+                   "où il enseigne (vide = selon le paramètre). date_debut / date_fin : engagement et fin de contrat.",
     "Indisponibilites": "type = enseignant ou local. Créneaux vides = journée entière.",
     "Modules": "Un module (unité d'enseignement) regroupe des cours. Prérequis : modules à terminer avant, séparés par « ; ».",
-    "Cours": "Cours (activités d'enseignement) d'un module : périodes, besoins en local/matériel. Rythme : fixe = mêmes "
-             "jours/heures du début à la fin ; souple = changements, pauses et reprises permis ; vide = rythme par défaut.",
+    "Cours": "Cours d'un module : périodes, besoins en local/matériel. Rythme : fixe ou souple. Bloc : taille des "
+             "séances (plage, 2…9, modulable ; vide = défaut). Implantation : si différente de celle du groupe. Locaux : "
+             "locaux imposés. periodes_distanciel : périodes données à distance (cours hybride, sans local).",
     "Attributions": "Qui donne le cours. Plusieurs lignes pour un cours = cours réparti (ex. 40 p. + 20 p.). "
                     "Plusieurs enseignants sur une ligne = co-enseignement (présents ensemble). "
                     "« groupes » : attribution propre à certains groupes (vide = tous).",
-    "Groupes": "Modules du parcours séparés par « ; ». Jours/créneaux vides = ceux du calendrier. Local préféré facultatif.",
+    "Groupes": "Modules du parcours séparés par « ; ». Implantation de la formation. Jours/plages vides = ceux du "
+               "calendrier. Local préféré facultatif.",
     "Stages": "Périodes de stage d'un groupe (pas de cours). Jours vides = tous les jours de la période.",
     "Parcours": "Facultatif : une ligne par module suivi par un groupe (alternative à la colonne Groupes.modules).",
     "Prerequis": "Facultatif : une ligne par prérequis (alternative à la colonne Modules.prerequis).",
@@ -104,6 +114,19 @@ def _entier(v: Any) -> int | None:
     if v in (None, ""):
         return None
     return int(float(str(v).replace(",", ".").strip()))
+
+
+def _booleen(v: Any) -> bool | None:
+    if v in (None, ""):
+        return None
+    if isinstance(v, bool):
+        return v
+    s = _cle(str(v))
+    if s in ("oui", "o", "1", "true", "vrai", "yes", "y", "x"):
+        return True
+    if s in ("non", "n", "0", "false", "faux", "no"):
+        return False
+    raise ErreurImport(f"valeur « {v} » : attendu oui ou non")
 
 
 def _texte(v: Any) -> str:
@@ -264,6 +287,10 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 "equipements": _liste(r.get("equipements")), "ressources": _liste(r.get("ressources")),
                 "max_seances_semaine": _entier(r.get("max_seances_semaine")),
                 "rythme": _cle(_texte(r.get("rythme"))) or None,
+                "bloc": _texte(r.get("bloc")) or None,
+                "implantation": _texte(r.get("implantation")) or None,
+                "locaux": _liste(r.get("locaux")),
+                "periodes_distanciel": _entier(r.get("periodes_distanciel")) or 0,
                 "attributions": attributions.pop(cid, []),
             })
         if attributions:
@@ -289,28 +316,44 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
         if cours_par_module:
             raise ErreurImport(f"Cours : module(s) inconnu(s) : {', '.join(sorted(cours_par_module)[:10])}")
 
+        etab = {"implantations": [
+            {"id": _texte(obligatoire(r, "id", "Implantations")), "nom": _texte(r.get("nom")), "adresse": _texte(r.get("adresse"))}
+            for r in lire("Implantations")]}
+        for cle in ("multi_sites_meme_jour", "enseignants_toutes_implantations"):
+            if _booleen(params.get(cle)) is not None:
+                etab[cle] = _booleen(params[cle])
+        for cle in ("delai_deplacement_min", "max_periodes_semaine_defaut"):
+            if _entier(params.get(cle)) is not None:
+                etab[cle] = _entier(params[cle])
+        if params.get("bloc_defaut") not in (None, ""):
+            etab["bloc_defaut"] = _texte(params["bloc_defaut"])
         brut = {
             "nom": _texte(params.get("nom")) or nom_defaut,
+            "etablissement": etab,
             "calendrier": {
                 "date_debut": _date(params["date_debut"]),
                 "date_fin": _date(params["date_fin"]),
                 **({"jours_cours": _liste(params["jours_cours"])} if params.get("jours_cours") else {}),
                 **({"rythme_defaut": _cle(_texte(params["rythme_defaut"]))} if params.get("rythme_defaut") else {}),
+                **({"cours_pendant_conges": _booleen(params["cours_pendant_conges"])}
+                   if _booleen(params.get("cours_pendant_conges")) is not None else {}),
                 "creneaux": [
                     {"id": _texte(obligatoire(r, "id", "Creneaux")), "libelle": _texte(r.get("libelle")),
                      "heure_debut": _heure(obligatoire(r, "heure_debut", "Creneaux")),
                      "heure_fin": _heure(obligatoire(r, "heure_fin", "Creneaux")),
-                     "periodes": _entier(obligatoire(r, "periodes", "Creneaux"))}
+                     "periodes": _entier(obligatoire(r, "periodes", "Creneaux")), "jours": _liste(r.get("jours"))}
                     for r in lire("Creneaux")
                 ],
                 "fermetures": [
                     {"date_debut": _date(obligatoire(r, "date_debut", "Fermetures")),
-                     "date_fin": _date(r.get("date_fin")) or _date(r["date_debut"]), "motif": _texte(r.get("motif"))}
+                     "date_fin": _date(r.get("date_fin")) or _date(r["date_debut"]), "motif": _texte(r.get("motif")),
+                     "type": _type_fermeture(r.get("type"))}
                     for r in lire("Fermetures")
                 ],
             },
             "locaux": [
                 {"id": _texte(obligatoire(r, "id", "Locaux")), "nom": _texte(r.get("nom")),
+                 "implantation": _texte(r.get("implantation")) or None,
                  "capacite": _entier(obligatoire(r, "capacite", "Locaux")), "equipements": _liste(r.get("equipements")),
                  "indisponibilites": indispos["local"].get(_texte(r["id"]), [])}
                 for r in lire("Locaux")
@@ -324,6 +367,8 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 {"id": _texte(obligatoire(r, "id", "Enseignants")), "nom": _texte(r.get("nom")),
                  "disponibilites": _liste(r.get("disponibilites")),
                  "max_periodes_semaine": _entier(r.get("max_periodes_semaine")),
+                 "implantations": _liste(r.get("implantations")),
+                 "date_debut": _date(r.get("date_debut")), "date_fin": _date(r.get("date_fin")),
                  "indisponibilites": indispos["enseignant"].get(_texte(r["id"]), [])}
                 for r in lire("Enseignants")
             ],
@@ -331,6 +376,7 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
             "groupes": [
                 {"id": _texte(obligatoire(r, "id", "Groupes")), "nom": _texte(r.get("nom")),
                  "effectif": _entier(obligatoire(r, "effectif", "Groupes")),
+                 "implantation": _texte(r.get("implantation")) or None,
                  "modules": list(dict.fromkeys(_liste(r.get("modules")) + parcours.pop(_texte(r["id"]), []))),
                  "jours_cours": _liste(r.get("jours_cours")),
                  "creneaux": _liste(r.get("creneaux")), "date_debut": _date(r.get("date_debut")),
@@ -346,6 +392,15 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
             raise
         raise ErreurImport(f"valeur illisible : {e}") from e
     return JeuDeDonnees.model_validate(brut)
+
+
+def _type_fermeture(v: Any) -> str:
+    s = _cle(_texte(v))
+    if s in ("", "ferie", "jour_ferie", "f"):
+        return "ferie"
+    if s in ("conges", "conge", "conges_scolaires", "vacances", "c"):
+        return "conges"
+    raise ErreurImport(f"type de fermeture « {v} » : attendu ferie ou conges")
 
 
 def excel_vers_donnees(contenu: bytes, complement: JeuDeDonnees | None = None) -> JeuDeDonnees:
@@ -425,26 +480,39 @@ def _j(v: list) -> str:
     return ";".join(v)
 
 
+def _oui(v: bool) -> str:
+    return "oui" if v else "non"
+
+
 def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
     cal = ds.calendrier
+    et = ds.etablissement
     indis = [["enseignant", e.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for e in ds.enseignants for i in e.indisponibilites]
     indis += [["local", l.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for l in ds.locaux for i in l.indisponibilites]
     return {
         "Parametres": [["nom", ds.nom], ["date_debut", cal.date_debut], ["date_fin", cal.date_fin],
-                       ["jours_cours", _j(cal.jours_cours)], ["rythme_defaut", cal.rythme_defaut]],
-        "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes] for c in cal.creneaux],
-        "Fermetures": [[f.date_debut, f.date_fin, f.motif] for f in cal.fermetures],
-        "Locaux": [[l.id, l.nom, l.capacite, _j(l.equipements)] for l in ds.locaux],
+                       ["jours_cours", _j(cal.jours_cours)], ["cours_pendant_conges", _oui(cal.cours_pendant_conges)],
+                       ["rythme_defaut", cal.rythme_defaut], ["bloc_defaut", et.bloc_defaut],
+                       ["multi_sites_meme_jour", _oui(et.multi_sites_meme_jour)],
+                       ["delai_deplacement_min", et.delai_deplacement_min],
+                       ["enseignants_toutes_implantations", _oui(et.enseignants_toutes_implantations)],
+                       ["max_periodes_semaine_defaut", et.max_periodes_semaine_defaut]],
+        "Implantations": [[i.id, i.nom, i.adresse] for i in et.implantations],
+        "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes, _j(c.jours)] for c in cal.creneaux],
+        "Fermetures": [[f.date_debut, f.date_fin, f.motif, f.type] for f in cal.fermetures],
+        "Locaux": [[l.id, l.nom, l.implantation, l.capacite, _j(l.equipements)] for l in ds.locaux],
         "Ressources": [[r.id, r.nom, r.quantite] for r in ds.ressources],
-        "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine] for e in ds.enseignants],
+        "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine, _j(e.implantations), e.date_debut,
+                         e.date_fin] for e in ds.enseignants],
         "Indisponibilites": indis,
         "Modules": [[m.id, m.nom, _j(m.prerequis)] for m in ds.modules],
-        "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine, c.rythme]
+        "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine, c.rythme,
+                   c.bloc, c.implantation, _j(c.locaux), c.periodes_distanciel or None]
                   for m in ds.modules for c in m.cours],
         "Attributions": [[c.id, _j(a.enseignants), a.periodes, _j(a.groupes)]
                          for m in ds.modules for c in m.cours for a in c.attributions],
-        "Groupes": [[g.id, g.nom, g.effectif, _j(g.modules), _j(g.jours_cours), _j(g.creneaux), g.date_debut, g.date_fin,
-                     g.local_prefere] for g in ds.groupes],
+        "Groupes": [[g.id, g.nom, g.effectif, _j(g.modules), g.implantation, _j(g.jours_cours), _j(g.creneaux), g.date_debut,
+                     g.date_fin, g.local_prefere] for g in ds.groupes],
         "Stages": [[g.id, s.date_debut, s.date_fin, _j(s.jours), s.motif] for g in ds.groupes for s in g.stages],
     }
 
@@ -476,9 +544,9 @@ def horaire_vers_excel(resultat: dict, titre: str) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
     cols = ["date", "jour", "heure_debut", "heure_fin", "periodes", "groupe", "groupe_nom", "module", "module_nom",
-            "cours", "cours_nom", "local", "enseignant"]
+            "cours", "cours_nom", "implantation", "local", "enseignant", "distanciel"]
     _feuille(wb, "Seances", cols, [[s[c] for c in cols] for s in resultat["seances"]])
-    cols_s = ["groupe", "module", "module_nom", "cours", "cours_nom", "enseignant", "periodes_requises",
+    cols_s = ["groupe", "module", "module_nom", "cours", "cours_nom", "enseignant", "distanciel", "periodes_requises",
               "periodes_planifiees", "periodes_manquantes", "creneaux_hebdo", "locaux", "nb_seances",
               "premiere_seance", "derniere_seance"]
     lignes = [[_j(s[c]) if isinstance(s[c], list) else s[c] for c in cols_s] for s in resultat["synthese"]]

@@ -51,6 +51,21 @@ class DemandePlanif(BaseModel):
     poids_compacite: int = Field(1, ge=0, le=100)
 
 
+class JeuVierge(BaseModel):
+    nom: str = Field("Mon établissement", max_length=200)
+    etablissement: dict = Field(default_factory=dict)
+    calendrier: dict
+
+
+class MiseAJourDonnees(BaseModel):
+    version: int
+    donnees: dict
+
+
+class ModifSeance(BaseModel):
+    distanciel: bool
+
+
 class NouvelUtilisateur(BaseModel):
     identifiant: str = Field(pattern=r"^[A-Za-z0-9_.@\-]{3,64}$")
     mot_de_passe: str = Field(max_length=256)
@@ -167,15 +182,46 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
     def lister_jeux(request: Request, u: Utilisateur = Depends(utilisateur_courant)):
         return st(request).jeux()
 
+    def _entete(ds: JeuDeDonnees, diag: list, source: str, version: int = 1) -> dict:
+        return {"nom": ds.nom, "source": source, "version": version, "nb_groupes": len(ds.groupes),
+                "nb_modules": len(ds.modules), "nb_cours": sum(len(m.cours) for m in ds.modules),
+                "nb_enseignants": len(ds.enseignants), "nb_locaux": len(ds.locaux),
+                "nb_implantations": len(ds.etablissement.implantations),
+                "nb_erreurs": sum(d["niveau"] == "erreur" for d in diag)}
+
     def _enregistrer_jeu(request: Request, u: Utilisateur, ds: JeuDeDonnees, source: str) -> dict:
         diag = avant_planification(ds)
-        entete = {"nom": ds.nom, "source": source, "nb_groupes": len(ds.groupes), "nb_modules": len(ds.modules),
-                  "nb_cours": sum(len(m.cours) for m in ds.modules),
-                  "nb_enseignants": len(ds.enseignants), "nb_locaux": len(ds.locaux),
-                  "nb_erreurs": sum(d["niveau"] == "erreur" for d in diag)}
+        entete = _entete(ds, diag, source)
         jid = st(request).creer_jeu(u.id, entete, {"donnees": ds.model_dump(mode="json"), "diagnostic": diag})
-        st(request).journaliser(u.identifiant, "import_donnees", jid, ip_client(request))
+        st(request).journaliser(u.identifiant, "import_donnees" if source != "accueil" else "creation_etablissement",
+                                jid, ip_client(request))
         return {"id": jid, **entete, "diagnostic": diag}
+
+    @app.post("/api/jeux/vierge")
+    def creer_vierge(d: JeuVierge, request: Request, u: Utilisateur = Depends(exige("planificateur"))):
+        """Assistant de première connexion : crée le jeu de données avec les paramètres de l'établissement."""
+        try:
+            ds = JeuDeDonnees.model_validate({"nom": d.nom, "etablissement": d.etablissement, "calendrier": d.calendrier})
+        except ValidationError as e:
+            raise HTTPException(422, {"message": "Paramètres invalides", "erreurs": _erreurs_lisibles(e)})
+        return _enregistrer_jeu(request, u, ds, "accueil")
+
+    @app.put("/api/jeux/{jid}/donnees")
+    def modifier_donnees(jid: str, m: MiseAJourDonnees, request: Request, u: Utilisateur = Depends(exige("planificateur"))):
+        """Remplace les données (paramètres, cours, enseignants…) après validation complète."""
+        j = _jeu(request, jid)
+        version = j.get("version", 1)
+        if m.version != version:
+            raise HTTPException(409, "Ces données ont été modifiées entre-temps par quelqu'un d'autre : rechargez la page.")
+        try:
+            ds = JeuDeDonnees.model_validate(m.donnees)
+        except ValidationError as e:
+            raise HTTPException(422, {"message": "Modification refusée", "erreurs": _erreurs_lisibles(e)})
+        diag = avant_planification(ds)
+        entete = _entete(ds, diag, j.get("source", "fichier"), version + 1)
+        st(request).maj_jeu(j["id"], entete, {"donnees": ds.model_dump(mode="json"), "diagnostic": diag})
+        st(request).journaliser(u.identifiant, "modification_donnees", j["id"], ip_client(request))
+        return {"id": j["id"], **entete, "diagnostic": diag, "donnees": ds.model_dump(mode="json")}
 
     @app.get("/api/modele-csv.zip")
     def modele_csv(u: Utilisateur = Depends(utilisateur_courant)):
@@ -215,6 +261,11 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
         if not j:
             raise HTTPException(404, "Jeu de données introuvable")
         return j
+
+    @app.get("/api/blocs")
+    def blocs(u: Utilisateur = Depends(utilisateur_courant)):
+        from .modeles import BLOCS_PROPOSES
+        return BLOCS_PROPOSES
 
     @app.get("/api/jeux/{jid}")
     def detail_jeu(jid: str, request: Request, u: Utilisateur = Depends(utilisateur_courant)):
@@ -261,6 +312,7 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
                 r = planifier(ds, Parametres(duree_max_s=d.duree_max_s, poids_compacite=d.poids_compacite)).en_dict()
                 r["diagnostic"] = apres_planification(ds, r)
                 r["parametres"] = d.model_dump()
+                r["donnees"] = ds.model_dump(mode="json")  # instantané : l'horaire reste lisible si les données changent
                 store.terminer_horaire(hid, r["statut"], r)
             except Exception:
                 log.exception("Échec de la planification %s", hid)
@@ -282,6 +334,23 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
     @app.get("/api/horaires/{hid}")
     def detail_horaire(hid: str, request: Request, u: Utilisateur = Depends(utilisateur_courant)):
         return _horaire(request, hid)
+
+    @app.patch("/api/horaires/{hid}/seances/{sid}")
+    def modifier_seance(hid: str, sid: int, m: ModifSeance, request: Request, u: Utilisateur = Depends(exige("planificateur"))):
+        """Passe une séance en distanciel (libère son local) ou en présentiel (cherche un local libre)."""
+        h = _horaire(request, hid)
+        c = h["contenu"]
+        if not c or not 0 <= sid < len(c["seances"]):
+            raise HTTPException(404, "Séance introuvable")
+        s = c["seances"][sid]
+        if m.distanciel:
+            s["distanciel"], s["local"] = True, "Distanciel"
+        elif s["distanciel"]:
+            s["distanciel"] = False
+            s["local"] = _local_libre(c, s) or "À attribuer"
+        st(request).maj_horaire(h["id"], c)
+        st(request).journaliser(u.identifiant, "modification_seance", f"{h['id']}#{sid}", ip_client(request))
+        return s
 
     @app.get("/api/horaires/{hid}/horaire.xlsx")
     def export_horaire(hid: str, request: Request, u: Utilisateur = Depends(utilisateur_courant)):
@@ -351,6 +420,23 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 def _fichier(contenu: bytes, nom: str, mime: str) -> Response:
     return Response(contenu, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{nom}"'})
+
+
+def _local_libre(contenu: dict, s: dict) -> str | None:
+    """Local compatible et libre pour une séance repassée en présentiel."""
+    if not contenu.get("donnees"):
+        return None
+    from .solveur.moteur import locaux_eligibles
+    ds = JeuDeDonnees.model_validate(contenu["donnees"])
+    g = next((g for g in ds.groupes if g.id == s["groupe"]), None)
+    c = next((c for m in ds.modules for c in m.cours if c.id == s["cours"]), None)
+    if not g or not c:
+        return None
+    rangs = set(range(s["debut_periode"], s["debut_periode"] + s["periodes"]))
+    pris = {x["local"] for x in contenu["seances"] if x is not s and x["date"] == s["date"]
+            and rangs & set(range(x["debut_periode"], x["debut_periode"] + x["periodes"]))}
+    impl = s.get("implantation") or c.implantation or g.implantation
+    return next((l.id for l in locaux_eligibles(ds, g, c, impl) if l.id not in pris), None)
 
 
 def _uuid(v: str) -> str:

@@ -12,8 +12,8 @@
     <form id="form-connexion" class="carte">
       <h1>Horaires</h1>
       <p class="discret">Planification des formations</p>
-      <label>Identifiant <input name="identifiant" autocomplete="username" required maxlength="64"></label>
-      <label>Mot de passe <input name="mot_de_passe" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>Identifiant <input name="identifiant" id="cx-identifiant" autocomplete="username" required maxlength="64"></label>
+      <label>Mot de passe <input name="mot_de_passe" id="cx-mdp" type="password" autocomplete="current-password" required maxlength="256"></label>
       <p id="erreur-connexion" class="erreur" role="alert"></p>
       <button type="submit" class="primaire">Se connecter</button>
     </form>
@@ -23,27 +23,107 @@
     <header class="entete">
       <strong class="logo">Horaires</strong>
       <nav id="onglets">
-        <button data-vue="donnees" class="actif">Données</button>
-        <button data-vue="horaires">Horaires</button>
+        <button data-vue="horaires" class="actif">Horaires</button>
+        <button data-vue="donnees">Données</button>
+        <button data-vue="parametres" data-role="planificateur">Paramètres</button>
         <button data-vue="admin" data-role="admin">Administration</button>
       </nav>
+      <label class="jeu-courant">Jeu de données <select id="jeu-courant"></select></label>
       <span class="utilisateur"><span id="nom-utilisateur"></span> · <span id="role-utilisateur" class="discret"></span></span>
       <button id="btn-mdp" class="lien">Mot de passe</button>
       <button id="btn-deconnexion" class="lien">Déconnexion</button>
     </header>
 
     <main>
+      <!-- ACCUEIL / PARAMÈTRES (même formulaire) -->
+      <section id="vue-accueil" class="vue" hidden>
+        <div class="carte accueil-intro">
+          <h2>Bienvenue</h2>
+          <p>Commençons par décrire votre établissement. Ces réglages s'appliquent à tous les horaires ; vous pourrez
+            les modifier à tout moment dans le menu <strong>Paramètres</strong>. Il faut environ 5 minutes.</p>
+        </div>
+      </section>
+
+      <section id="vue-parametres" class="vue" hidden>
+        <form id="form-parametres" class="carte assistant" novalidate>
+          <ol class="etapes" id="etapes"></ol>
+
+          <fieldset data-etape="1" class="etape">
+            <legend>Établissement et année scolaire</legend>
+            <div class="ligne">
+              <label>Nom <input id="p-nom" maxlength="200" required></label>
+              <label>Début de l'année <input id="p-debut" type="date" required></label>
+              <label>Fin de l'année <input id="p-fin" type="date" required></label>
+            </div>
+            <div class="champ-groupe">
+              <span class="etiquette">Jours de cours</span>
+              <div class="cases" id="p-jours"></div>
+            </div>
+            <label class="case-a-cocher"><input type="checkbox" id="p-conges"> Des cours ont lieu pendant les congés scolaires</label>
+            <div class="champ-groupe">
+              <span class="etiquette">Jours fériés et congés</span>
+              <table class="tableau compact" id="p-fermetures"><thead><tr><th>Du</th><th>Au</th><th>Motif</th><th>Type</th><th></th></tr></thead><tbody></tbody></table>
+              <button type="button" class="petit" id="p-ajout-fermeture">+ Ajouter une fermeture</button>
+            </div>
+          </fieldset>
+
+          <fieldset data-etape="2" class="etape" hidden>
+            <legend>Horaires des cours</legend>
+            <p class="discret">Décrivez les plages de cours d'une journée et leur nombre de périodes. Une plage peut être
+              réservée à certains jours (par exemple le samedi matin).</p>
+            <table class="tableau compact" id="p-plages"><thead><tr><th>Nom</th><th>Début</th><th>Fin</th><th>Périodes</th><th>Seulement le</th><th></th></tr></thead><tbody></tbody></table>
+            <button type="button" class="petit" id="p-ajout-plage">+ Ajouter une plage</button>
+          </fieldset>
+
+          <fieldset data-etape="3" class="etape" hidden>
+            <legend>Organisation des blocs de cours</legend>
+            <p class="discret">Durée habituelle d'une séance. Ce réglage s'applique partout ; chaque cours peut avoir le sien.</p>
+            <div class="choix-blocs" id="p-blocs"></div>
+          </fieldset>
+
+          <fieldset data-etape="4" class="etape" hidden>
+            <legend>Implantations</legend>
+            <label class="case-a-cocher"><input type="checkbox" id="p-multi-impl"> L'établissement donne cours sur plusieurs implantations</label>
+            <div id="p-impl-details" hidden>
+              <table class="tableau compact" id="p-implantations"><thead><tr><th>Code</th><th>Nom</th><th>Adresse</th><th></th></tr></thead><tbody></tbody></table>
+              <button type="button" class="petit" id="p-ajout-impl">+ Ajouter une implantation</button>
+              <label class="case-a-cocher"><input type="checkbox" id="p-multi-sites"> Un enseignant peut donner cours sur deux implantations le même jour</label>
+              <label id="p-delai-l">Délai minimum pour se déplacer d'un site à l'autre (minutes) <input type="number" id="p-delai" min="0" max="600" step="5"></label>
+              <p class="discret">Les formations sont rattachées à une implantation via leurs groupes ; un cours peut être donné
+                ailleurs (fiche du cours).</p>
+            </div>
+          </fieldset>
+
+          <fieldset data-etape="5" class="etape" hidden>
+            <legend>Enseignants</legend>
+            <label>Nombre maximum de périodes par semaine et par enseignant (vide = pas de limite)
+              <input type="number" id="p-max-sem" min="1" max="200"></label>
+            <label class="case-a-cocher"><input type="checkbox" id="p-toutes-impl"> Tous les enseignants peuvent aller sur toutes les implantations
+              (sinon, à préciser dans la fiche de chaque enseignant)</label>
+            <p class="discret">Les dates d'engagement et de fin de contrat (y compris le départ à la pension) se renseignent
+              dans la fiche de chaque enseignant ; sans date, l'enseignant est disponible toute l'année.</p>
+          </fieldset>
+
+          <p id="p-erreur" class="erreur" role="alert"></p>
+          <div class="ligne navigation-etapes">
+            <button type="button" id="p-prec">Précédent</button>
+            <span class="espace"></span>
+            <button type="button" id="p-suiv" class="primaire">Suivant</button>
+            <button type="submit" id="p-valider" class="primaire" hidden>Enregistrer</button>
+          </div>
+        </form>
+      </section>
+
       <!-- DONNÉES -->
-      <section id="vue-donnees" class="vue">
+      <section id="vue-donnees" class="vue" hidden>
         <div class="carte" data-role="planificateur">
           <h2>Importer des données</h2>
-          <p class="discret">Classeur Excel (un onglet par type), fichiers CSV (sélectionnez-les tous, ou un .zip) ou JSON.
-            Les CSV portent le nom de la table : <code>parametres.csv</code>, <code>creneaux.csv</code>, <code>locaux.csv</code>,
-            <code>enseignants.csv</code>, <code>modules.csv</code>, <code>cours.csv</code>, <code>attributions.csv</code>,
-            <code>groupes.csv</code>… Séparateur « ; » ou « , », encodage UTF-8 ou Windows.</p>
+          <p class="discret">Classeur Excel, fichiers CSV (sélectionnez-les tous, ou un .zip) ou JSON. Pour un export de votre
+            logiciel de gestion, choisissez « Compléter ce qui manque avec » votre jeu actuel : paramètres, locaux et
+            disponibilités déjà saisis sont conservés.</p>
           <form id="form-import" class="ligne">
-            <input type="file" name="fichier" accept=".xlsx,.json,.csv,.zip" multiple required>
-            <input name="nom" placeholder="Nom (facultatif)" maxlength="200">
+            <input type="file" name="fichier" id="imp-fichier" accept=".xlsx,.json,.csv,.zip" multiple required>
+            <input name="nom" id="imp-nom" placeholder="Nom (facultatif)" maxlength="200">
             <label>Compléter ce qui manque avec
               <select name="completer_avec" id="completer-avec"><option value="">— rien (import complet) —</option></select>
             </label>
@@ -56,29 +136,32 @@
         </div>
 
         <div class="carte">
-          <h2>Jeux de données</h2>
-          <table class="tableau" id="table-jeux">
-            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Cours</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <div class="ligne"><h2>Contenu du jeu de données</h2><span class="espace"></span>
+            <input type="search" id="filtre-donnees" placeholder="Rechercher…" aria-label="Rechercher"></div>
+          <div class="sous-onglets" id="sous-onglets">
+            <button data-entite="cours" class="actif">Cours</button>
+            <button data-entite="enseignants">Enseignants</button>
+            <button data-entite="groupes">Groupes</button>
+            <button data-entite="locaux">Locaux</button>
+          </div>
+          <div class="defile"><table class="tableau cliquable" id="table-entites"><thead></thead><tbody></tbody></table></div>
         </div>
 
-        <div class="carte" id="detail-jeu" hidden>
-          <h2 id="detail-jeu-titre"></h2>
-          <h3>Contrôle des données</h3>
-          <ul id="detail-jeu-diag" class="diagnostic"></ul>
+        <div class="carte">
+          <h2>Contrôle des données</h2>
+          <ul id="diag-jeu" class="diagnostic"></ul>
           <div data-role="planificateur">
             <h3>Lancer la planification</h3>
             <form id="form-planif" class="ligne">
               <label>Durée maximale de calcul
-                <select name="duree_max_s">
+                <select name="duree_max_s" id="pl-duree">
                   <option value="60">1 min</option><option value="120" selected>2 min</option>
                   <option value="300">5 min</option><option value="600">10 min</option>
                   <option value="1200">20 min</option><option value="1800">30 min</option>
                 </select>
               </label>
-              <label>Regroupement des modules
-                <select name="poids_compacite">
+              <label>Regroupement des cours
+                <select name="poids_compacite" id="pl-compacite">
                   <option value="0">Étalés</option><option value="1" selected>Équilibré</option><option value="10">Concentrés</option>
                 </select>
               </label>
@@ -87,10 +170,18 @@
             <p class="discret">Plus la durée est longue, meilleur est le résultat. Pour un grand établissement, comptez 10 à 30 minutes.</p>
           </div>
         </div>
+
+        <div class="carte">
+          <h2>Historique des jeux de données</h2>
+          <div class="defile"><table class="tableau" id="table-jeux">
+            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Cours</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+        </div>
       </section>
 
       <!-- HORAIRES -->
-      <section id="vue-horaires" class="vue" hidden>
+      <section id="vue-horaires" class="vue">
         <div class="carte">
           <div class="ligne">
             <label>Horaire <select id="choix-horaire"></select></label>
@@ -103,26 +194,38 @@
         </div>
 
         <div class="carte" id="bloc-grille" hidden>
-          <div class="ligne">
+          <div class="ligne outils-grille">
             <label>Vue par
-              <select id="vue-par"><option value="groupe">Groupe</option><option value="enseignant">Enseignant</option><option value="local">Local</option></select>
+              <select id="vue-par">
+                <option value="groupe">Groupe</option><option value="enseignant">Enseignant</option>
+                <option value="local">Local</option><option value="jour">Jour (tous les groupes)</option>
+              </select>
             </label>
-            <select id="vue-entite"></select>
+            <label id="l-entite">Afficher <select id="vue-entite"></select></label>
+            <div class="segmente" id="echelle" role="group" aria-label="Période affichée">
+              <button data-echelle="jour">Jour</button><button data-echelle="semaine" class="actif">Semaine</button>
+              <button data-echelle="mois">Mois</button><button data-echelle="civile">Année civile</button>
+              <button data-echelle="scolaire">Année scolaire</button>
+            </div>
             <span class="espace"></span>
-            <button id="sem-prec" aria-label="Semaine précédente">◀</button>
-            <strong id="sem-titre"></strong>
-            <button id="sem-suiv" aria-label="Semaine suivante">▶</button>
+            <div class="navigation">
+              <button id="nav-prec" aria-label="Précédent">◀</button>
+              <input type="date" id="nav-date" aria-label="Aller à la date">
+              <button id="nav-suiv" aria-label="Suivant">▶</button>
+            </div>
           </div>
-          <div id="grille" class="grille"></div>
+          <h3 id="titre-periode"></h3>
+          <div class="defile"><div id="rendu"></div></div>
+          <p class="discret legende">Cliquez sur une séance pour ouvrir la fiche du cours. Hachures : hors année scolaire ; gris : fermeture ; orange : stage.</p>
         </div>
 
         <div class="carte" id="bloc-synthese" hidden>
           <div class="ligne"><h2>Synthèse par cours</h2><span class="espace"></span>
             <label class="case-a-cocher"><input type="checkbox" id="filtre-manques"> Seulement les cours incomplets</label></div>
-          <table class="tableau" id="table-synthese">
-            <thead><tr><th>Groupe</th><th>Module</th><th>Cours</th><th>Enseignant(s)</th><th>Périodes</th><th>Avancement</th><th>Créneaux hebdo</th><th>Local</th><th>Début</th><th>Fin</th></tr></thead>
+          <div class="defile"><table class="tableau cliquable" id="table-synthese">
+            <thead><tr><th>Groupe</th><th>Module</th><th>Cours</th><th>Enseignant(s)</th><th>Mode</th><th>Périodes</th><th>Avancement</th><th>Créneaux hebdo</th><th>Local</th><th>Début</th><th>Fin</th></tr></thead>
             <tbody></tbody>
-          </table>
+          </table></div>
         </div>
       </section>
 
@@ -136,9 +239,9 @@
           </table>
           <h3>Nouvel utilisateur</h3>
           <form id="form-utilisateur" class="ligne">
-            <input name="identifiant" placeholder="Identifiant" required pattern="[A-Za-z0-9_.@\-]{3,64}">
-            <input name="mot_de_passe" type="password" placeholder="Mot de passe (12 car. min.)" required minlength="12" autocomplete="new-password">
-            <select name="role"><option value="lecteur">Lecteur</option><option value="planificateur">Planificateur</option><option value="admin">Administrateur</option></select>
+            <input name="identifiant" id="nu-identifiant" placeholder="Identifiant" required pattern="[A-Za-z0-9_.@\-]{3,64}">
+            <input name="mot_de_passe" id="nu-mdp" type="password" placeholder="Mot de passe (12 car. min.)" required minlength="12" autocomplete="new-password">
+            <select name="role" id="nu-role"><option value="lecteur">Lecteur</option><option value="planificateur">Planificateur</option><option value="admin">Administrateur</option></select>
             <button type="submit" class="primaire">Créer</button>
           </form>
           <p id="retour-utilisateur" class="erreur"></p>
@@ -154,11 +257,20 @@
     </main>
   </div>
 
+  <!-- FICHE LATÉRALE (cours, enseignant, groupe, local) -->
+  <aside id="fiche" class="fiche" hidden aria-labelledby="fiche-titre">
+    <div class="fiche-entete">
+      <div><span id="fiche-type" class="sur-titre"></span><h2 id="fiche-titre"></h2></div>
+      <button id="fiche-fermer" class="lien-sombre" aria-label="Fermer">✕</button>
+    </div>
+    <form id="fiche-form" class="fiche-corps" novalidate></form>
+  </aside>
+
   <dialog id="dialogue-mdp">
     <form id="form-mdp" method="dialog" class="pile">
       <h2>Changer de mot de passe</h2>
-      <label>Mot de passe actuel <input name="actuel" type="password" required autocomplete="current-password"></label>
-      <label>Nouveau mot de passe <input name="nouveau" type="password" required minlength="12" autocomplete="new-password"></label>
+      <label>Mot de passe actuel <input name="actuel" id="mdp-actuel" type="password" required autocomplete="current-password"></label>
+      <label>Nouveau mot de passe <input name="nouveau" id="mdp-nouveau" type="password" required minlength="12" autocomplete="new-password"></label>
       <p id="retour-mdp" class="erreur"></p>
       <div class="ligne"><button type="submit" class="primaire">Valider</button><button type="button" id="mdp-annuler">Annuler</button></div>
     </form>
