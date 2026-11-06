@@ -121,6 +121,20 @@ uvicorn app.main:app --reload
 
 Ouvrez <http://localhost:8000>, connectez-vous, puis cliquez sur « Charger l'exemple » et « Planifier ».
 
+### Tester sans rien installer : GitHub Codespaces
+
+Depuis un simple navigateur, sans installer Python :
+
+1. Sur la page du dépôt GitHub : bouton vert **Code** → onglet **Codespaces** → **Create codespace on main**.
+2. Patientez 2 à 3 minutes : l'installation se fait toute seule. Le terminal affiche alors
+   l'**identifiant** (`admin`) et un **mot de passe** de test.
+3. L'application s'ouvre dans un nouvel onglet. Sinon : onglet **Ports** en bas → icône 🌐 sur le port 8000.
+
+L'adresse n'est accessible qu'à votre compte GitHub (port privé). La machine s'arrête d'elle-même
+après 30 minutes d'inactivité ; on la relance depuis la même page (**Code → Codespaces**).
+**Données fictives uniquement** : c'est un environnement de test, hébergé par GitHub, sans la clé de
+chiffrement gérée comme en production. Le quota gratuit de GitHub couvre environ 60 heures par mois.
+
 ### Sur un poste Windows, pour tester
 
 Pré-requis : Python 3.12 ou plus récent ([python.org](https://www.python.org/downloads/), cochez

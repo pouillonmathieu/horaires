@@ -1,0 +1,16 @@
+{
+  // Environnement de TEST dans GitHub Codespaces : l'application démarre toute seule,
+  // accessible uniquement avec votre compte GitHub. Données fictives uniquement.
+  "name": "Horaires (test)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+  "postAttachCommand": "python -m scripts.demarrer_test",
+  "containerEnv": {
+    "HORAIRES_MODE_DEV": "1",
+    "HORAIRES_DATA_DIR": "/workspaces/donnees-test"
+  },
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": { "label": "Horaires", "onAutoForward": "openBrowser" }
+  }
+}
