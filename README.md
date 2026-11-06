@@ -1,0 +1,125 @@
+# Horaires : planification des formations pour adultes
+
+Application web qui construit automatiquement les horaires de formation à partir des contraintes de
+l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et exporte le résultat
+(Excel, agendas `.ics`).
+
+## Ce que le moteur prend en compte
+
+| Contrainte | Où la saisir |
+|---|---|
+| Modules préalables (prérequis) : un module se termine avant le début du suivant | `Modules.prerequis` |
+| Jours de cours et créneaux (matin / après-midi / soir…) par groupe | `Parametres`, `Creneaux`, `Groupes.jours_cours`, `Groupes.creneaux` |
+| Jours de stage (pas de cours) | `Stages` |
+| Jours fériés, congés, vacances | `Fermetures` |
+| Taille du groupe et capacité des locaux | `Groupes.effectif`, `Locaux.capacite` |
+| Disponibilités et indisponibilités des enseignants | `Enseignants.disponibilites`, `Indisponibilites` |
+| Indisponibilités des locaux (travaux, examens…) | `Indisponibilites` (type `local`) |
+| Équipement fixe d'un local (PC, lit médicalisé…) | `Locaux.equipements`, `Modules.equipements` |
+| Matériel mobile en quantité limitée | `Ressources`, `Modules.ressources` |
+| Enseignants habilités par module, avec choix automatique | `Modules.enseignants` |
+| Plafond hebdomadaire d'un enseignant, rythme maximal d'un module | `max_periodes_semaine`, `max_seances_semaine` |
+
+Pour démarrer, téléchargez le **modèle Excel** depuis l'application (ou ouvrez
+`exemples/modele_horaires.xlsx`). Il contient un exemple complet et une ligne d'aide par onglet.
+
+## Le « moteur IA »
+
+Le cœur du moteur est de l'**optimisation sous contraintes** (Google OR-Tools CP-SAT). C'est la
+technique d'IA adaptée aux horaires : elle garantit que **toutes les contraintes dures sont
+respectées**, ce qu'un modèle de langage (type ChatGPT/Claude) ne sait pas garantir. Elle tourne
+aussi entièrement sur votre serveur : aucune donnée ne sort.
+
+- Le moteur choisit, pour chaque groupe et module, l'enseignant, les dates et créneaux, et le local.
+- Objectif : 1) tout planifier, 2) terminer les modules au plus tôt, 3) les regrouper ou les étaler (réglable).
+- S'il manque de la place, le moteur ne s'arrête pas sur « pas de solution ». Il produit le meilleur
+  horaire possible et signale, module par module, les périodes non placées, la cause et quoi changer.
+- Un contrôle des données avant calcul détecte les incohérences : cycles de prérequis, aucun local
+  assez grand, enseignant surchargé, volume horaire impossible à caser, etc.
+
+Un assistant conversationnel (LLM) pourra être ajouté par-dessus, par exemple pour saisir une
+contrainte en langage naturel (« Mme Lambert n'est plus disponible le vendredi ») ou commenter un
+horaire. Voir la feuille de route.
+
+## Sécurité
+
+| Mesure | Détail |
+|---|---|
+| Chiffrement au repos | Toutes les données métier (noms, modules, horaires) sont chiffrées en **AES-256-GCM**. Chaque bloc est lié à son enregistrement : une copie ou une falsification est détectée. Les tests vérifient qu'aucun nom n'apparaît en clair dans la base. |
+| Clé maîtresse | Fournie par variable d'environnement ou coffre-fort de secrets, jamais stockée avec la base. |
+| Mots de passe | Argon2id, 12 caractères minimum, comparaison à temps constant. |
+| Anti-force brute | Blocage de 15 min après 5 échecs (par compte et par IP). |
+| Sessions | Jeton aléatoire dont seule l'empreinte est stockée côté serveur. Cookie `__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`. Expiration après 30 min d'inactivité et 8 h au maximum. |
+| CSRF | Jeton lié à la session, exigé sur toute modification. |
+| Rôles | `lecteur` (consulter, exporter), `planificateur` (importer, planifier), `admin` (comptes, journal). |
+| Journal d'audit | Connexions, imports, calculs, exports, gestion des comptes. Chaînage SHA-256 : une modification a posteriori est signalée dans l'interface. |
+| Navigateur | CSP stricte (aucun script tiers ni inline), HSTS, anti-clickjacking, `no-referrer`, pas de cache des réponses API. Aucune donnée insérée via `innerHTML` (anti-XSS). |
+| Imports | Taille limitée, type détecté par le contenu, protection contre les « zip bombs » et les attaques XML (`defusedxml`), validation stricte et références croisées vérifiées. |
+| Conteneur | Utilisateur non privilégié, système de fichiers en lecture seule, aucune capacité Linux. |
+| RGPD | Aucune donnée d'apprenant n'est nécessaire : seuls les effectifs des groupes sont utilisés. |
+
+À prévoir côté hébergement : HTTPS (inclus via Caddy), sauvegardes chiffrées du volume `donnees`,
+hébergement dans l'UE ou sur site, et idéalement une authentification unique (SSO, voir feuille de route).
+
+## Démarrage
+
+### En local (développement)
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+export HORAIRES_MODE_DEV=1 HORAIRES_COOKIE_SECURE=0   # dev uniquement : clé auto-générée, HTTP local
+python -m scripts.creer_admin admin
+uvicorn app.main:app --reload
+```
+
+Ouvrez <http://localhost:8000>, connectez-vous, puis cliquez sur « Charger l'exemple » et « Planifier ».
+
+### En production (Docker + HTTPS)
+
+```bash
+cp .env.exemple .env && chmod 600 .env    # renseigner HORAIRES_CLE_MAITRE et DOMAINE
+docker compose up -d --build
+docker compose exec horaires python -m scripts.creer_admin admin
+```
+
+⚠️ Conservez la clé maîtresse en lieu sûr : sans elle, les données sont **irrécupérables**.
+
+### Tests
+
+```bash
+pytest
+```
+
+Les 18 tests couvrent le moteur et la sécurité. Côté moteur : absence de double réservation,
+respect de chaque contrainte, prérequis, matériel et plafonds, signalement des manques, aller-retour
+Excel. Côté sécurité : accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos,
+détection de falsification, parcours complet par l'API.
+
+## Architecture
+
+```
+app/
+  modeles.py            modèle de données + validation stricte
+  solveur/moteur.py     modèle d'optimisation CP-SAT
+  solveur/diagnostic.py explications lisibles (avant / après calcul)
+  fichiers.py           import/export Excel & JSON, export Excel/iCalendar des horaires
+  connecteurs/          sources de données : fichier aujourd'hui, logiciel de gestion demain
+  chiffrement.py        AES-256-GCM
+  stockage.py           SQLite chiffré + journal d'audit chaîné
+  securite.py           authentification, sessions, rôles, CSRF, anti-force brute
+  main.py               API web
+  static/               interface (HTML/CSS/JS sans dépendance externe)
+```
+
+## Feuille de route
+
+1. **Connecteur vers votre logiciel de gestion.** Le gabarit `app/connecteurs/api_gestion.py` est
+   prêt. Il reste à définir la correspondance des champs : API REST, vues SQL en lecture seule ou
+   export planifié. Le reste de l'application ne change pas.
+2. **Édition manuelle** dans la grille (glisser-déposer, verrouillage de séances puis recalcul du reste).
+3. **Préférences « souples »** : jours préférés des enseignants, regroupement des cours d'un même
+   enseignant, régularité hebdomadaire, limite d'heures par jour.
+4. **SSO** (Microsoft Entra ID / Google) et authentification à deux facteurs.
+5. **Assistant en langage naturel** : il traduirait une demande en modification de contraintes, en
+   n'envoyant que des identifiants anonymisés au modèle de langage, ou avec un modèle hébergé localement.

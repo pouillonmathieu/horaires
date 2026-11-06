@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Horaires – Planification des formations</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="ecran-connexion" class="connexion" hidden>
+    <form id="form-connexion" class="carte">
+      <h1>Horaires</h1>
+      <p class="discret">Planification des formations</p>
+      <label>Identifiant <input name="identifiant" autocomplete="username" required maxlength="64"></label>
+      <label>Mot de passe <input name="mot_de_passe" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <p id="erreur-connexion" class="erreur" role="alert"></p>
+      <button type="submit" class="primaire">Se connecter</button>
+    </form>
+  </section>
+
+  <div id="ecran-app" hidden>
+    <header class="entete">
+      <strong class="logo">Horaires</strong>
+      <nav id="onglets">
+        <button data-vue="donnees" class="actif">Données</button>
+        <button data-vue="horaires">Horaires</button>
+        <button data-vue="admin" data-role="admin">Administration</button>
+      </nav>
+      <span class="utilisateur"><span id="nom-utilisateur"></span> · <span id="role-utilisateur" class="discret"></span></span>
+      <button id="btn-mdp" class="lien">Mot de passe</button>
+      <button id="btn-deconnexion" class="lien">Déconnexion</button>
+    </header>
+
+    <main>
+      <!-- DONNÉES -->
+      <section id="vue-donnees" class="vue">
+        <div class="carte" data-role="planificateur">
+          <h2>Importer des données</h2>
+          <p class="discret">Classeur Excel (un onglet par type : créneaux, fermetures, locaux, enseignants, modules, groupes, stages…) ou fichier JSON.</p>
+          <form id="form-import" class="ligne">
+            <input type="file" name="fichier" accept=".xlsx,.json" required>
+            <input name="nom" placeholder="Nom (facultatif)" maxlength="200">
+            <button type="submit" class="primaire">Importer</button>
+            <a href="/api/modele.xlsx" class="bouton">Télécharger le modèle Excel</a>
+            <button type="button" id="btn-exemple">Charger l'exemple</button>
+          </form>
+          <div id="retour-import"></div>
+        </div>
+
+        <div class="carte">
+          <h2>Jeux de données</h2>
+          <table class="tableau" id="table-jeux">
+            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="carte" id="detail-jeu" hidden>
+          <h2 id="detail-jeu-titre"></h2>
+          <h3>Contrôle des données</h3>
+          <ul id="detail-jeu-diag" class="diagnostic"></ul>
+          <div data-role="planificateur">
+            <h3>Lancer la planification</h3>
+            <form id="form-planif" class="ligne">
+              <label>Durée maximale de calcul
+                <select name="duree_max_s">
+                  <option value="15">15 s</option><option value="30" selected>30 s</option>
+                  <option value="60">1 min</option><option value="180">3 min</option><option value="600">10 min</option>
+                </select>
+              </label>
+              <label>Regroupement des modules
+                <select name="poids_compacite">
+                  <option value="0">Étalés</option><option value="1" selected>Équilibré</option><option value="10">Concentrés</option>
+                </select>
+              </label>
+              <button type="submit" class="primaire">Planifier</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- HORAIRES -->
+      <section id="vue-horaires" class="vue" hidden>
+        <div class="carte">
+          <div class="ligne">
+            <label>Horaire <select id="choix-horaire"></select></label>
+            <span id="statut-horaire" class="pastille"></span>
+            <span class="espace"></span>
+            <a id="export-xlsx" class="bouton">Exporter Excel</a>
+            <a id="export-ics" class="bouton">Exporter agenda (.ics)</a>
+          </div>
+          <ul id="horaire-alertes" class="diagnostic"></ul>
+        </div>
+
+        <div class="carte" id="bloc-grille" hidden>
+          <div class="ligne">
+            <label>Vue par
+              <select id="vue-par"><option value="groupe">Groupe</option><option value="enseignant">Enseignant</option><option value="local">Local</option></select>
+            </label>
+            <select id="vue-entite"></select>
+            <span class="espace"></span>
+            <button id="sem-prec" aria-label="Semaine précédente">◀</button>
+            <strong id="sem-titre"></strong>
+            <button id="sem-suiv" aria-label="Semaine suivante">▶</button>
+          </div>
+          <div id="grille" class="grille"></div>
+        </div>
+
+        <div class="carte" id="bloc-synthese" hidden>
+          <h2>Synthèse par module</h2>
+          <table class="tableau" id="table-synthese">
+            <thead><tr><th>Groupe</th><th>Module</th><th>Enseignant</th><th>Périodes</th><th>Avancement</th><th>Séances</th><th>Début</th><th>Fin</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ADMINISTRATION -->
+      <section id="vue-admin" class="vue" hidden>
+        <div class="carte">
+          <h2>Utilisateurs</h2>
+          <table class="tableau" id="table-utilisateurs">
+            <thead><tr><th>Identifiant</th><th>Rôle</th><th>Actif</th><th>Créé le</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <h3>Nouvel utilisateur</h3>
+          <form id="form-utilisateur" class="ligne">
+            <input name="identifiant" placeholder="Identifiant" required pattern="[A-Za-z0-9_.@\-]{3,64}">
+            <input name="mot_de_passe" type="password" placeholder="Mot de passe (12 car. min.)" required minlength="12" autocomplete="new-password">
+            <select name="role"><option value="lecteur">Lecteur</option><option value="planificateur">Planificateur</option><option value="admin">Administrateur</option></select>
+            <button type="submit" class="primaire">Créer</button>
+          </form>
+          <p id="retour-utilisateur" class="erreur"></p>
+        </div>
+        <div class="carte">
+          <h2>Journal d'audit <span id="journal-integrite" class="pastille"></span></h2>
+          <table class="tableau" id="table-journal">
+            <thead><tr><th>Date (UTC)</th><th>Utilisateur</th><th>Action</th><th>Cible</th><th>IP</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="dialogue-mdp">
+    <form id="form-mdp" method="dialog" class="pile">
+      <h2>Changer de mot de passe</h2>
+      <label>Mot de passe actuel <input name="actuel" type="password" required autocomplete="current-password"></label>
+      <label>Nouveau mot de passe <input name="nouveau" type="password" required minlength="12" autocomplete="new-password"></label>
+      <p id="retour-mdp" class="erreur"></p>
+      <div class="ligne"><button type="submit" class="primaire">Valider</button><button type="button" id="mdp-annuler">Annuler</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

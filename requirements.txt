@@ -1,0 +1,9 @@
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.33
+pydantic==2.13.5
+ortools==9.15.6755
+openpyxl==3.1.5
+defusedxml==0.7.1
+cryptography==50.0.2
+argon2-cffi==25.1.0

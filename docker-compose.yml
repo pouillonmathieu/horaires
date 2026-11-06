@@ -1,0 +1,26 @@
+# Déploiement type : application + reverse proxy Caddy (HTTPS automatique).
+# La clé de chiffrement est lue depuis le fichier .env (à protéger : chmod 600), idéalement remplacé
+# par le coffre-fort de secrets de votre hébergeur.
+services:
+  horaires:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HORAIRES_CLE_MAITRE: ${HORAIRES_CLE_MAITRE:?définissez HORAIRES_CLE_MAITRE dans .env}
+    volumes:
+      - donnees:/donnees
+    expose: ["8000"]
+  proxy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports: ["443:443", "80:80"]
+    command: caddy reverse-proxy --from ${DOMAINE:?définissez DOMAINE dans .env} --to horaires:8000
+    volumes:
+      - caddy:/data
+volumes:
+  donnees:
+  caddy:
