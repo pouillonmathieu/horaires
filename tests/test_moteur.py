@@ -67,12 +67,21 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
                 if (g.id, pre) in bornes and (g.id, mid) in bornes:
                     assert bornes[(g.id, pre)][1] < bornes[(g.id, mid)][0], f"{g.id} : {pre} doit précéder {mid}"
 
-    # régularité : un cours garde le même local sur un créneau hebdomadaire donné
-    salles = defaultdict(set)
+    # rythme fixe : mêmes créneaux hebdomadaires du début à la fin, même local sur chaque créneau
+    debuts, fins, salles = defaultdict(dict), defaultdict(dict), defaultdict(set)
     for s in r["seances"]:
-        if s["local"] != "À attribuer":
-            salles[(s["groupe"], s["cours"], s["enseignant"], s["jour"], s["creneau"])].add(s["local"])
-    assert sum(len(v) > 1 for v in salles.values()) <= len(salles) * 0.05
+        c = cours[s["cours"]]
+        if (c.rythme or ds.calendrier.rythme_defaut) != "fixe":
+            continue
+        u, w = (s["groupe"], s["cours"], s["enseignant"]), (s["jour"], s["creneau"])
+        sem = date.fromisoformat(s["date"]).toordinal() // 7
+        debuts[u][w] = min(debuts[u].get(w, sem), sem)
+        fins[u][w] = max(fins[u].get(w, sem), sem)
+        salles[(u, w)].add(s["local"])
+    for u in debuts:
+        assert max(debuts[u].values()) - min(debuts[u].values()) <= 1, f"{u} : début décalé"
+        assert max(fins[u].values()) - min(fins[u].values()) <= 2, f"{u} : fin décalée"
+    assert all(len(v) == 1 for v in salles.values())
 
 
 def test_solution_complete(resultat):
@@ -105,6 +114,24 @@ def test_materiel_et_plafonds(ds, resultat):
             lambert[date.fromisoformat(s["date"]).isocalendar()[:2]] += s["periodes"]
     assert max(mannequin.values()) <= 1
     assert max(lambert.values()) <= 16
+
+
+def test_rythme_fixe(resultat):
+    tva = defaultdict(list)
+    for s in resultat["seances"]:
+        if s["cours"] == "CPT-TVA-1":
+            tva[(s["jour"], s["creneau"])].append(s["date"])
+    assert tva
+    debuts = sorted(min(v) for v in tva.values())
+    assert (date.fromisoformat(debuts[-1]) - date.fromisoformat(debuts[0])).days < 7
+
+
+def test_rythme_fixe_partout():
+    brut = copy.deepcopy(EXEMPLE)
+    brut["calendrier"]["rythme_defaut"] = "fixe"
+    ds = JeuDeDonnees.model_validate(brut)
+    r = planifier(ds, Parametres(duree_max_s=20)).en_dict()
+    verifier_coherence(ds, r)
 
 
 def test_salles_specialisees_preservees(resultat):
@@ -173,6 +200,30 @@ def test_import_csv_tolerant(ds):
         ConnecteurFichier([f for f in fichiers if f[0] != "COURS.CSV"]).lire_donnees()
     with pytest.raises(ErreurImport, match="non reconnu"):
         ConnecteurFichier(fichiers + [("divers.csv", b"a;b")]).lire_donnees()
+
+
+def test_import_partiel_complete_par_un_jeu_existant(ds):
+    from app.fichiers import csv_vers_donnees
+    export = {  # export minimal d'un logiciel de gestion, en formats « une ligne par lien »
+        "modules.csv": "id;nom\n" + "\n".join(f"{m.id};{m.nom}" for m in ds.modules),
+        "prerequis.csv": "module;prerequis\n" + "\n".join(f"{m.id};{p}" for m in ds.modules for p in m.prerequis),
+        "cours.csv": "id;module;nom;periodes\n" + "\n".join(
+            f"{c.id};{m.id};{c.nom};{c.periodes}" for m in ds.modules for c in m.cours),
+        "attributions.csv": "cours;enseignants;periodes;groupes\n" + "\n".join(
+            f"{c.id};{'|'.join(a.enseignants)};{a.periodes};{'|'.join(a.groupes)}"
+            for m in ds.modules for c in m.cours for a in c.attributions),
+        "groupes.csv": "id;nom;effectif\n" + "\n".join(f"{g.id};{g.nom};{g.effectif + 1}" for g in ds.groupes),
+        "parcours.csv": "groupe;module\n" + "\n".join(f"{g.id};{m}" for g in ds.groupes for m in g.modules),
+    }
+    fichiers = [(n, t.encode("cp1252")) for n, t in export.items()]
+    with pytest.raises(ErreurImport, match="manquant"):
+        csv_vers_donnees(fichiers)
+    r = csv_vers_donnees(fichiers, complement=ds)
+    assert r.calendrier == ds.calendrier and r.locaux == ds.locaux and r.enseignants == ds.enseignants
+    assert [m.prerequis for m in r.modules] == [m.prerequis for m in ds.modules]
+    assert [c.equipements for m in r.modules for c in m.cours] == [c.equipements for m in ds.modules for c in m.cours]
+    g = {x.id: x for x in r.groupes}["AS1"]
+    assert g.effectif == 13 and g.stages and g.local_prefere == "A102" and g.modules == ds.groupes[0].modules
 
 
 def test_identifiants_du_logiciel_de_gestion():

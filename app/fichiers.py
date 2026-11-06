@@ -31,14 +31,18 @@ ONGLETS: dict[str, list[str]] = {
     "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine"],
     "Indisponibilites": ["type", "id", "date_debut", "date_fin", "creneaux", "motif"],
     "Modules": ["id", "nom", "prerequis"],
-    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine"],
+    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine", "rythme"],
     "Attributions": ["cours", "enseignants", "periodes", "groupes"],
     "Groupes": ["id", "nom", "effectif", "modules", "jours_cours", "creneaux", "date_debut", "date_fin", "local_prefere"],
     "Stages": ["groupe", "date_debut", "date_fin", "jours", "motif"],
+    # Formats « une ligne par lien » (facultatifs), plus proches d'un export de base de données :
+    "Parcours": ["groupe", "module"],
+    "Prerequis": ["module", "prerequis"],
 }
 
 AIDE = {
-    "Parametres": "nom, date_debut, date_fin (AAAA-MM-JJ ou JJ/MM/AAAA), jours_cours (ex. lun;mar;mer;jeu;ven)",
+    "Parametres": "nom, date_debut, date_fin (AAAA-MM-JJ ou JJ/MM/AAAA), jours_cours (ex. lun;mar;mer;jeu;ven), "
+                  "rythme_defaut (souple ou fixe)",
     "Creneaux": "Plages horaires d'une journée. « periodes » = nombre de périodes de cours du créneau.",
     "Fermetures": "Jours fériés, congés et vacances (une ligne par période ; un jour isolé : début = fin).",
     "Locaux": "Capacité en places assises ; équipements fixes séparés par « ; » (ex. pc;projecteur).",
@@ -46,12 +50,15 @@ AIDE = {
     "Enseignants": "Disponibilités : jour:creneau séparés par « ; » (ex. lun:soir;mer:*). Vide = toujours disponible.",
     "Indisponibilites": "type = enseignant ou local. Créneaux vides = journée entière.",
     "Modules": "Un module (unité d'enseignement) regroupe des cours. Prérequis : modules à terminer avant, séparés par « ; ».",
-    "Cours": "Cours (activités d'enseignement) d'un module, avec leur nombre de périodes et leurs besoins en local/matériel.",
+    "Cours": "Cours (activités d'enseignement) d'un module : périodes, besoins en local/matériel. Rythme : fixe = mêmes "
+             "jours/heures du début à la fin ; souple = changements, pauses et reprises permis ; vide = rythme par défaut.",
     "Attributions": "Qui donne le cours. Plusieurs lignes pour un cours = cours réparti (ex. 40 p. + 20 p.). "
                     "Plusieurs enseignants sur une ligne = co-enseignement (présents ensemble). "
                     "« groupes » : attribution propre à certains groupes (vide = tous).",
     "Groupes": "Modules du parcours séparés par « ; ». Jours/créneaux vides = ceux du calendrier. Local préféré facultatif.",
     "Stages": "Périodes de stage d'un groupe (pas de cours). Jours vides = tous les jours de la période.",
+    "Parcours": "Facultatif : une ligne par module suivi par un groupe (alternative à la colonne Groupes.modules).",
+    "Prerequis": "Facultatif : une ligne par prérequis (alternative à la colonne Modules.prerequis).",
 }
 
 MAX_FICHIERS_ZIP = 50
@@ -175,8 +182,45 @@ def _lignes_csv(contenu: bytes, nom: str) -> list[dict]:
     return out
 
 
-def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> JeuDeDonnees:
+def _avec_complement(lire: Callable[[str], list[dict]], complement: JeuDeDonnees | None) -> Callable[[str], list[dict]]:
+    """Complète les tables (ou les colonnes) absentes de l'import avec celles d'un jeu existant.
+
+    Permet de ne réinjecter que l'export du logiciel de gestion : créneaux, locaux, disponibilités,
+    congés… restent ceux déjà saisis. Une table présente mais sans une colonne (ex. enseignants.csv
+    sans « disponibilites ») est complétée colonne par colonne, en rapprochant les identifiants.
+    """
+    if complement is None:
+        return lire
+    tables = donnees_vers_tables(complement)
+
+    def lire_complete(onglet: str) -> list[dict]:
+        lignes = lire(onglet)
+        ref = [dict(zip(ONGLETS[onglet], l)) for l in tables.get(onglet, [])]
+        if not lignes:
+            return [{**r, "_ligne": f"{i + 1} (reprise du jeu existant)"} for i, r in enumerate(ref)]
+        cle = "cle" if onglet == "Parametres" else ("id" if "id" in ONGLETS[onglet] else None)
+        if cle and ref:
+            par_cle = {_texte(r[cle]): r for r in ref}
+            presentes = set().union(*(l.keys() for l in lignes))
+            manquantes = [c for c in ONGLETS[onglet] if c not in presentes]
+            for l in lignes:
+                r = par_cle.get(_texte(l.get(cle)))
+                if r:
+                    for c in manquantes:
+                        l[c] = r.get(c)
+            if onglet == "Parametres":
+                connues = {_cle(_texte(l.get("cle"))) for l in lignes}
+                lignes += [{**r, "_ligne": "(reprise)"} for r in ref if _cle(_texte(r["cle"])) not in connues]
+        return lignes
+
+    return lire_complete
+
+
+def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
+                        complement: JeuDeDonnees | None = None) -> JeuDeDonnees:
     """Construit le jeu de données à partir de tables (onglets Excel ou fichiers CSV)."""
+    lire = _avec_complement(lire, complement)
+
     def obligatoire(r: dict, col: str, table: str):
         v = r.get(col)
         if v in (None, ""):
@@ -219,16 +263,29 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> J
                 "id": cid, "nom": _texte(r.get("nom")), "periodes": _entier(obligatoire(r, "periodes", "Cours")),
                 "equipements": _liste(r.get("equipements")), "ressources": _liste(r.get("ressources")),
                 "max_seances_semaine": _entier(r.get("max_seances_semaine")),
+                "rythme": _cle(_texte(r.get("rythme"))) or None,
                 "attributions": attributions.pop(cid, []),
             })
         if attributions:
             raise ErreurImport(f"Attributions : cours inconnu(s) : {', '.join(sorted(attributions)[:10])}")
 
+        prerequis_lignes: dict[str, list[str]] = {}
+        for r in lire("Prerequis"):
+            prerequis_lignes.setdefault(_texte(obligatoire(r, "module", "Prerequis")), []).append(
+                _texte(obligatoire(r, "prerequis", "Prerequis")))
         modules = []
         for r in lire("Modules"):
             mid = _texte(obligatoire(r, "id", "Modules"))
-            modules.append({"id": mid, "nom": _texte(r.get("nom")), "prerequis": _liste(r.get("prerequis")),
+            pre = _liste(r.get("prerequis"))
+            pre += [p for p in prerequis_lignes.pop(mid, []) if p not in pre]
+            modules.append({"id": mid, "nom": _texte(r.get("nom")), "prerequis": pre,
                             "cours": cours_par_module.pop(mid, [])})
+        if prerequis_lignes:
+            raise ErreurImport(f"Prerequis : module(s) inconnu(s) : {', '.join(sorted(prerequis_lignes)[:10])}")
+        parcours: dict[str, list[str]] = {}
+        for r in lire("Parcours"):
+            parcours.setdefault(_texte(obligatoire(r, "groupe", "Parcours")), []).append(
+                _texte(obligatoire(r, "module", "Parcours")))
         if cours_par_module:
             raise ErreurImport(f"Cours : module(s) inconnu(s) : {', '.join(sorted(cours_par_module)[:10])}")
 
@@ -238,6 +295,7 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> J
                 "date_debut": _date(params["date_debut"]),
                 "date_fin": _date(params["date_fin"]),
                 **({"jours_cours": _liste(params["jours_cours"])} if params.get("jours_cours") else {}),
+                **({"rythme_defaut": _cle(_texte(params["rythme_defaut"]))} if params.get("rythme_defaut") else {}),
                 "creneaux": [
                     {"id": _texte(obligatoire(r, "id", "Creneaux")), "libelle": _texte(r.get("libelle")),
                      "heure_debut": _heure(obligatoire(r, "heure_debut", "Creneaux")),
@@ -273,13 +331,16 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> J
             "groupes": [
                 {"id": _texte(obligatoire(r, "id", "Groupes")), "nom": _texte(r.get("nom")),
                  "effectif": _entier(obligatoire(r, "effectif", "Groupes")),
-                 "modules": _liste(r.get("modules")), "jours_cours": _liste(r.get("jours_cours")),
+                 "modules": list(dict.fromkeys(_liste(r.get("modules")) + parcours.pop(_texte(r["id"]), []))),
+                 "jours_cours": _liste(r.get("jours_cours")),
                  "creneaux": _liste(r.get("creneaux")), "date_debut": _date(r.get("date_debut")),
                  "date_fin": _date(r.get("date_fin")), "local_prefere": _texte(r.get("local_prefere")) or None,
                  "stages": stages.get(_texte(r["id"]), [])}
                 for r in lire("Groupes")
             ],
         }
+        if parcours:
+            raise ErreurImport(f"Parcours : groupe(s) inconnu(s) : {', '.join(sorted(parcours)[:10])}")
     except (TypeError, ValueError) as e:
         if isinstance(e, ErreurImport):
             raise
@@ -287,16 +348,16 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> J
     return JeuDeDonnees.model_validate(brut)
 
 
-def excel_vers_donnees(contenu: bytes) -> JeuDeDonnees:
+def excel_vers_donnees(contenu: bytes, complement: JeuDeDonnees | None = None) -> JeuDeDonnees:
     _verifier_zip(contenu).close()
     wb = load_workbook(io.BytesIO(contenu), read_only=True, data_only=True)
     try:
-        return tables_vers_donnees(lambda onglet: _lignes_excel(wb, onglet), "Import Excel")
+        return tables_vers_donnees(lambda onglet: _lignes_excel(wb, onglet), "Import Excel", complement)
     finally:
         wb.close()
 
 
-def csv_vers_donnees(fichiers: list[tuple[str, bytes]]) -> JeuDeDonnees:
+def csv_vers_donnees(fichiers: list[tuple[str, bytes]], complement: JeuDeDonnees | None = None) -> JeuDeDonnees:
     """Un fichier CSV par table, nommé comme l'onglet Excel correspondant (ex. cours.csv, attributions.csv).
 
     `fichiers` peut contenir des CSV et/ou des archives ZIP de CSV.
@@ -326,10 +387,11 @@ def csv_vers_donnees(fichiers: list[tuple[str, bytes]]) -> JeuDeDonnees:
                            f"Noms attendus : {', '.join(o.lower() + '.csv' for o in ONGLETS)}")
     manquants = [o for o in ("Parametres", "Creneaux", "Locaux", "Enseignants", "Modules", "Cours", "Attributions", "Groupes")
                  if o not in tables]
-    if manquants:
-        raise ErreurImport(f"fichier(s) CSV manquant(s) : {', '.join(m.lower() + '.csv' for m in manquants)}")
+    if manquants and complement is None:
+        raise ErreurImport(f"fichier(s) CSV manquant(s) : {', '.join(m.lower() + '.csv' for m in manquants)}. "
+                           "Vous pouvez aussi compléter l'import avec un jeu de données existant.")
     cache = {o: _lignes_csv(c, f"{o.lower()}.csv") for o, c in tables.items()}
-    return tables_vers_donnees(lambda onglet: cache.get(onglet, []), "Import CSV")
+    return tables_vers_donnees(lambda onglet: cache.get(onglet, []), "Import CSV", complement)
 
 
 def json_vers_donnees(contenu: bytes) -> JeuDeDonnees:
@@ -369,7 +431,7 @@ def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
     indis += [["local", l.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for l in ds.locaux for i in l.indisponibilites]
     return {
         "Parametres": [["nom", ds.nom], ["date_debut", cal.date_debut], ["date_fin", cal.date_fin],
-                       ["jours_cours", _j(cal.jours_cours)]],
+                       ["jours_cours", _j(cal.jours_cours)], ["rythme_defaut", cal.rythme_defaut]],
         "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes] for c in cal.creneaux],
         "Fermetures": [[f.date_debut, f.date_fin, f.motif] for f in cal.fermetures],
         "Locaux": [[l.id, l.nom, l.capacite, _j(l.equipements)] for l in ds.locaux],
@@ -377,7 +439,7 @@ def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
         "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine] for e in ds.enseignants],
         "Indisponibilites": indis,
         "Modules": [[m.id, m.nom, _j(m.prerequis)] for m in ds.modules],
-        "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine]
+        "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine, c.rythme]
                   for m in ds.modules for c in m.cours],
         "Attributions": [[c.id, _j(a.enseignants), a.periodes, _j(a.groupes)]
                          for m in ds.modules for c in m.cours for a in c.attributions],

@@ -15,8 +15,9 @@ class ConnecteurFichier(Connecteur):
 
     nom = "fichier"
 
-    def __init__(self, fichiers: list[tuple[str, bytes]]):
+    def __init__(self, fichiers: list[tuple[str, bytes]], complement: JeuDeDonnees | None = None):
         self.fichiers = fichiers
+        self.complement = complement  # jeu existant qui fournit les tables/colonnes absentes de l'import
 
     def lire_donnees(self) -> JeuDeDonnees:
         if not self.fichiers:
@@ -25,11 +26,11 @@ class ConnecteurFichier(Connecteur):
             nom, contenu = self.fichiers[0]
             if contenu.startswith(SIGNATURE_ZIP):
                 if nom.lower().endswith(".zip") or b"[Content_Types].xml" not in contenu[:4096] and not nom.lower().endswith(".xlsx"):
-                    return csv_vers_donnees(self.fichiers)
-                return excel_vers_donnees(contenu)
+                    return csv_vers_donnees(self.fichiers, self.complement)
+                return excel_vers_donnees(contenu, self.complement)
             if contenu.lstrip(b"\xef\xbb\xbf \r\n\t")[:1] == b"{":
                 return json_vers_donnees(contenu)
         if all(not c.startswith(SIGNATURE_ZIP) or n.lower().endswith(".zip") for n, c in self.fichiers):
-            return csv_vers_donnees(self.fichiers)
+            return csv_vers_donnees(self.fichiers, self.complement)
         raise ErreurImport("format non reconnu : fournissez un classeur Excel (.xlsx), un fichier JSON, "
                            "ou les fichiers CSV (séparément ou dans un .zip)")

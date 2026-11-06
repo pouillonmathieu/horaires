@@ -77,7 +77,7 @@ EXEMPLE = {
             _c("CPT-BASE-EX", "Comptabilité – exercices", 20, [_a("PEETERS", 20, ["CPT"]), _a("VERMEULEN", 20, ["CPT2"])]),
         ]},
         {"id": "CPT-TVA", "nom": "TVA", "prerequis": ["CPT-BASE"], "cours": [
-            _c("CPT-TVA-1", "TVA", 60, [_a("PEETERS", 60)]),
+            _c("CPT-TVA-1", "TVA", 60, [_a("PEETERS", 60)], rythme="fixe"),
         ]},
         {"id": "CPT-FISC", "nom": "Fiscalité des entreprises", "prerequis": ["CPT-TVA"], "cours": [
             _c("CPT-FISC-1", "Fiscalité", 40, [_a("PEETERS", 40)]),

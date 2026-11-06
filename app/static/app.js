@@ -95,6 +95,10 @@ function montrerVue(v) {
 // ------------------------------------------------------------------ jeux de données
 async function chargerJeux() {
   etat.jeux = await api("/api/jeux");
+  const choix = $("#completer-avec"), garde = choix.value;
+  [...choix.options].slice(1).forEach((o) => o.remove());
+  for (const j of etat.jeux) choix.append(h("option", { value: j.id }, `${j.nom} (${fmtDateHeure(j.cree_le)})`));
+  choix.value = etat.jeux.some((j) => j.id === garde) ? garde : "";
   const tb = vider($("#table-jeux tbody"));
   if (!etat.jeux.length) tb.append(h("tr", {}, h("td", { colspan: 9, classe: "discret" }, "Aucune donnée importée. Commencez par le modèle Excel ou l'exemple.")));
   for (const j of etat.jeux) {

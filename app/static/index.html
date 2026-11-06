@@ -44,6 +44,9 @@
           <form id="form-import" class="ligne">
             <input type="file" name="fichier" accept=".xlsx,.json,.csv,.zip" multiple required>
             <input name="nom" placeholder="Nom (facultatif)" maxlength="200">
+            <label>Compléter ce qui manque avec
+              <select name="completer_avec" id="completer-avec"><option value="">— rien (import complet) —</option></select>
+            </label>
             <button type="submit" class="primaire">Importer</button>
             <a href="/api/modele.xlsx" class="bouton">Modèle Excel</a>
             <a href="/api/modele-csv.zip" class="bouton">Modèle CSV</a>

@@ -21,6 +21,11 @@ SESSION_MAX_HEURES = int(os.environ.get("HORAIRES_SESSION_MAX_HEURES", "8"))
 TAILLE_MAX_IMPORT = int(os.environ.get("HORAIRES_TAILLE_MAX_IMPORT", str(20 * 1024 * 1024)))
 DUREE_MAX_SOLVEUR_S = int(os.environ.get("HORAIRES_DUREE_MAX_SOLVEUR_S", "3600"))
 MODE_DEV = _bool("HORAIRES_MODE_DEV", False)
+# Mode aperçu (TEST UNIQUEMENT) : autorise l'affichage dans le volet d'aperçu d'une autre application
+# (iframe) ; le cookie de session passe alors en SameSite=None + Secure. Jamais en production.
+MODE_APERCU = _bool("HORAIRES_APERCU", False)
+if MODE_APERCU:
+    COOKIE_SECURE = True
 MOT_DE_PASSE_LONGUEUR_MIN = 12
 TENTATIVES_MAX = 5
 BLOCAGE_MIN = 15

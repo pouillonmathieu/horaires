@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
@@ -84,9 +84,16 @@ class Creneau(Strict):
         return self
 
 
+Rythme = Literal["fixe", "souple"]
+
+
 class Calendrier(Strict):
     date_debut: date
     date_fin: date
+    rythme_defaut: Rythme = Field(
+        default="souple",
+        description="fixe = mêmes jours/heures du début à la fin du cours ; souple = changements, pauses et reprises permis",
+    )
     jours_cours: list[str] = Field(default_factory=lambda: ["lun", "mar", "mer", "jeu", "ven"])
     creneaux: list[Creneau] = Field(min_length=1, max_length=20)
     fermetures: list[Periode] = Field(default_factory=list, description="jours fériés, congés, vacances")
@@ -169,6 +176,7 @@ class Cours(Strict):
     equipements: list[Id] = Field(default_factory=list, description="équipement fixe requis dans le local")
     ressources: list[Id] = Field(default_factory=list, description="matériel mobile requis (1 unité par séance)")
     max_seances_semaine: int | None = Field(default=None, ge=1, le=50)
+    rythme: Rythme | None = Field(default=None, description="vide = rythme par défaut du calendrier")
     attributions: list[Attribution] = Field(min_length=1, max_length=50)
 
     def attributions_pour(self, groupe_id: str) -> list[Attribution]:

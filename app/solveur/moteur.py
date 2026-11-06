@@ -80,6 +80,10 @@ class Unite:
         return f"{self.groupe.id}/{self.cours.id}/{self.part}"
 
 
+def rythme_fixe(ds: JeuDeDonnees, c: Cours) -> bool:
+    return (c.rythme or ds.calendrier.rythme_defaut) == "fixe"
+
+
 def construire_unites(ds: JeuDeDonnees) -> list[Unite]:
     modules = {m.id: m for m in ds.modules}
     out = []
@@ -182,6 +186,8 @@ class Parametres:
     duree_max_s: float = 120.0
     poids_fin: int = 10  # terminer tôt
     poids_compacite: int = 1  # resserrer chaque cours dans le temps
+    segments_souple: int = 2  # cours « souple » : périodes distinctes par créneau hebdo (pause/reprise, changement de local)
+    poids_regularite: int = 2  # pénalité par irrégularité, en semaines de retard équivalentes
     nb_threads: int = 8
 
 
@@ -213,6 +219,7 @@ class _Var:
     cs: cp_model.IntVar
     ce: cp_model.IntVar
     cumul: list[int]
+    k: int = 0  # segment (0 = principal ; >0 = reprise après une pause ou changement de local)
 
 
 @dataclass
@@ -243,9 +250,11 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     cumul_ens = defaultdict(lambda: ([], []))
     cumul_res = defaultdict(list)
 
+    fixe = {u.idx: rythme_fixe(ds, u.cours) for u in unites}
     for u in unites:
         if not eligibles[u.idx] or any(res_par_id[r].quantite == 0 for r in u.cours.ressources):
             continue
+        K = 1 if fixe[u.idx] else max(1, params.segments_souple)
         for ch in hz.creneaux_hebdo:
             dispo = hz.dispo_unite(u, ch)
             if not dispo or not any(dispo):
@@ -253,36 +262,54 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
             semaines = [t for t in range(T) if dispo[t]]
             pw = ch.creneau.periodes
             n_max = min(len(semaines), math.ceil(u.periodes / pw))
-            nom = f"{u.idx}_{ch.w}"
-            p = mdl.NewBoolVar(f"p_{nom}")
-            s = mdl.NewIntVarFromDomain(Domain.FromValues(semaines), f"s_{nom}")
-            e = mdl.NewIntVarFromDomain(Domain.FromValues([t + 1 for t in semaines]), f"e_{nom}")
-            taille = mdl.NewIntVar(1, T, f"d_{nom}")
-            iv = mdl.NewOptionalIntervalVar(s, taille, e, p, f"i_{nom}")
             cumul = [0]
             for a in dispo:
                 cumul.append(cumul[-1] + a)
-            cs = mdl.NewIntVar(0, cumul[-1], f"cs_{nom}")
-            ce = mdl.NewIntVar(0, cumul[-1], f"ce_{nom}")
-            mdl.AddElement(s, cumul, cs)
-            mdl.AddElement(e, cumul, ce)
-            nb = mdl.NewIntVar(0, n_max, f"n_{nom}")
-            mdl.Add(nb == ce - cs).OnlyEnforceIf(p)
-            mdl.Add(nb == 0).OnlyEnforceIf(p.Not())
-            mdl.Add(s == semaines[0]).OnlyEnforceIf(p.Not())
-            mdl.Add(e == semaines[0] + 1).OnlyEnforceIf(p.Not())
+            precedent = None
+            for k in range(K):
+                nom = f"{u.idx}_{ch.w}_{k}"
+                p = mdl.NewBoolVar(f"p_{nom}")
+                s = mdl.NewIntVarFromDomain(Domain.FromValues(semaines), f"s_{nom}")
+                e = mdl.NewIntVarFromDomain(Domain.FromValues([t + 1 for t in semaines]), f"e_{nom}")
+                taille = mdl.NewIntVar(1, T, f"d_{nom}")
+                iv = mdl.NewOptionalIntervalVar(s, taille, e, p, f"i_{nom}")
+                cs = mdl.NewIntVar(0, cumul[-1], f"cs_{nom}")
+                ce = mdl.NewIntVar(0, cumul[-1], f"ce_{nom}")
+                mdl.AddElement(s, cumul, cs)
+                mdl.AddElement(e, cumul, ce)
+                nb = mdl.NewIntVar(0, n_max, f"n_{nom}")
+                mdl.Add(nb == ce - cs).OnlyEnforceIf(p)
+                mdl.Add(nb == 0).OnlyEnforceIf(p.Not())
+                mdl.Add(s == semaines[0]).OnlyEnforceIf(p.Not())
+                mdl.Add(e == semaines[0] + 1).OnlyEnforceIf(p.Not())
+                if precedent is not None:  # segments ordonnés : une reprise suit le segment précédent
+                    mdl.AddImplication(p, precedent.present)
+                    mdl.Add(s >= precedent.fin).OnlyEnforceIf(p)
 
-            v = _Var(u, ch, dispo, p, s, e, iv, nb, taille, cs, ce, cumul)
-            vars_uw.append(v)
-            par_unite[u.idx].append(v)
-            nogroupe[(u.groupe.id, ch.w)].append(iv)
-            for ens in u.enseignants:
-                noens[(ens, ch.w)].append(iv)
-                ivs, dem = cumul_ens[ens]
-                ivs.append(iv)
-                dem.append(pw)
-            for r in u.cours.ressources:
-                cumul_res[(r, ch.w)].append(iv)
+                v = _Var(u, ch, dispo, p, s, e, iv, nb, taille, cs, ce, cumul, k)
+                precedent = v
+                vars_uw.append(v)
+                par_unite[u.idx].append(v)
+                nogroupe[(u.groupe.id, ch.w)].append(iv)
+                for ens in u.enseignants:
+                    noens[(ens, ch.w)].append(iv)
+                    ivs, dem = cumul_ens[ens]
+                    ivs.append(iv)
+                    dem.append(pw)
+                for r in u.cours.ressources:
+                    cumul_res[(r, ch.w)].append(iv)
+
+    # rythme fixe : tous les créneaux hebdomadaires du cours commencent la même semaine
+    # et se terminent ensemble (à une semaine près, pour ne pas dépasser le volume prévu)
+    debut_fixe, fin_fixe = {}, {}
+    for u in unites:
+        if fixe[u.idx] and par_unite.get(u.idx):
+            debut_fixe[u.idx] = sf = mdl.NewIntVar(0, T, f"sf_{u.idx}")
+            fin_fixe[u.idx] = ef = mdl.NewIntVar(0, T, f"ef_{u.idx}")
+            for v in par_unite[u.idx]:
+                mdl.Add(v.debut == sf).OnlyEnforceIf(v.present)
+                mdl.Add(v.fin <= ef).OnlyEnforceIf(v.present)
+                mdl.Add(v.fin >= ef - 1).OnlyEnforceIf(v.present)
 
     for groupe in (nogroupe, noens):
         for ivs in groupe.values():
@@ -335,8 +362,9 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
         for v in vs:
             mdl.Add(du <= v.debut * W + v.ch.w).OnlyEnforceIf(v.present)
             mdl.Add(fu >= (v.fin - 1) * W + v.ch.w).OnlyEnforceIf(v.present)
-        if u.cours.max_seances_semaine and len(vs) > u.cours.max_seances_semaine:
-            mdl.Add(sum(v.present for v in vs) <= u.cours.max_seances_semaine)
+        premiers = [v for v in vs if v.k == 0]  # un segment de reprise implique le segment principal
+        if u.cours.max_seances_semaine and len(premiers) > u.cours.max_seances_semaine:
+            mdl.Add(sum(v.present for v in premiers) <= u.cours.max_seances_semaine)
 
     # prérequis entre modules, par groupe
     debut_m, fin_m = {}, {}
@@ -365,9 +393,11 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     from .heuristique import construire
     candidats = defaultdict(list)
     for v in vars_uw:
-        candidats[v.u.idx].append((v.ch, v.dispo))
-    glouton, debut_glouton = construire(hz, ds, unites, eligibles, candidats)
-    indice_glouton = _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, debut_m, fin_m, W)
+        if v.k == 0:
+            candidats[v.u.idx].append((v.ch, v.dispo))
+    glouton, debut_glouton = construire(hz, ds, unites, eligibles, candidats, fixe, max(1, params.segments_souple))
+    indice_glouton = _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, debut_m, fin_m, W,
+                             debut_fixe, fin_fixe)
     for var, val in indice_glouton.values():
         mdl.AddHint(var, val)
     manque_glouton = sum(indice_glouton.valeur(manque[u.idx]) for u in unites)
@@ -408,7 +438,9 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     indice.vars.extend(range(len(sol)))
     indice.values.extend(sol)
     mdl.Add(total_manque <= meilleur)
-    mdl.Minimize(params.poids_fin * sum(fin_u.values()) + params.poids_compacite * sum(fin_u[i] - debut_u[i] for i in fin_u))
+    irregularites = [v.present for v in vars_uw if v.k > 0]
+    mdl.Minimize(params.poids_fin * sum(fin_u.values()) + params.poids_compacite * sum(fin_u[i] - debut_u[i] for i in fin_u)
+                 + params.poids_regularite * W * params.poids_fin * sum(irregularites))
     solveur.parameters.max_time_in_seconds = max(3.0, D * 0.9 - (time.monotonic() - t0))
     st2 = solveur.Solve(mdl)
     if st2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -452,7 +484,8 @@ class _DictVars(dict):
         return dict.__getitem__(self, var.Index())[1]
 
 
-def _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, debut_m, fin_m, W) -> dict:
+def _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, debut_m, fin_m, W,
+            debut_fixe, fin_fixe) -> dict:
     """Valeurs de toutes les variables du modèle correspondant à la solution heuristique.
 
     Retourne {indice de variable: (variable, valeur)} (les variables CP-SAT ne sont pas des clés sûres).
@@ -460,18 +493,24 @@ def _indice(vars_uw, unites, glouton, debut_glouton, manque, debut_u, fin_u, deb
     h = _DictVars()
     livre = defaultdict(int)
     bornes = defaultdict(list)
+    semaines = defaultdict(list)
     for v in vars_uw:
-        sol = glouton.get((v.u.idx, v.ch.w))
+        sol = glouton.get((v.u.idx, v.ch.w, v.k))
         if sol:
             s, e, _ = sol
             nb = v.cumul[e] - v.cumul[s]
             bornes[v.u.idx].append((s * W + v.ch.w, (e - 1) * W + v.ch.w))
+            semaines[v.u.idx].append((s, e))
         else:
             s = next(t for t, a in enumerate(v.dispo) if a)
             e, nb = s + 1, 0
         h.update({v.present: int(bool(sol)), v.debut: s, v.fin: e, v.taille: e - s,
                   v.cs: v.cumul[s], v.ce: v.cumul[e], v.nb: nb})
         livre[v.u.idx] += nb * v.ch.creneau.periodes
+    for i, sf in debut_fixe.items():
+        sem = semaines.get(i)
+        h[sf] = sem[0][0] if sem else 0
+        h[fin_fixe[i]] = max(e for _, e in sem) if sem else 0
     par_module = defaultdict(list)
     for u in unites:
         h[manque[u.idx]] = max(0, u.periodes - livre[u.idx])
@@ -645,7 +684,8 @@ def _lire_solution(hz: Horizon, unites: list[Unite], places: list[_Place], res: 
     for u in unites:
         livre, dates, hebdo, locaux = 0, [], [], set()
         for p in par_unite.get(u.idx, []):
-            hebdo.append(p.ch.libelle)
+            if p.ch.libelle not in hebdo:
+                hebdo.append(p.ch.libelle)
             for t in p.semaines:
                 d = hz.date(t, p.ch)
                 local = p.local or p.locaux_par_semaine.get(t)

@@ -82,14 +82,17 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
         rep: Response = await call_next(request)
         rep.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+            + ("frame-ancestors https:" if config.MODE_APERCU else "frame-ancestors 'none'")
         )
         rep.headers["X-Content-Type-Options"] = "nosniff"
-        rep.headers["X-Frame-Options"] = "DENY"
+        if not config.MODE_APERCU:
+            rep.headers["X-Frame-Options"] = "DENY"
         rep.headers["Referrer-Policy"] = "no-referrer"
         rep.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
-        rep.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        rep.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        if not config.MODE_APERCU:
+            rep.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+            rep.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         if request.url.path.startswith("/api/"):
             rep.headers["Cache-Control"] = "no-store"
         if config.COOKIE_SECURE:
@@ -127,7 +130,8 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
         store.creer_session(empreinte_jeton(jeton), u["id"], csrf, t)
         store.journaliser(u["identifiant"], "connexion", ip=ip)
         rep = JSONResponse({"identifiant": u["identifiant"], "role": u["role"], "csrf": csrf})
-        rep.set_cookie(NOM_COOKIE, jeton, httponly=True, secure=config.COOKIE_SECURE, samesite="strict",
+        rep.set_cookie(NOM_COOKIE, jeton, httponly=True, secure=config.COOKIE_SECURE,
+                       samesite="none" if config.MODE_APERCU else "strict",
                        path="/", max_age=config.SESSION_MAX_HEURES * 3600)
         return rep
 
@@ -179,7 +183,7 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
 
     @app.post("/api/jeux")
     async def importer(request: Request, fichier: list[UploadFile] = File(...), nom: str = Form(""),
-                       u: Utilisateur = Depends(exige("planificateur"))):
+                       completer_avec: str = Form(""), u: Utilisateur = Depends(exige("planificateur"))):
         if len(fichier) > 20:
             raise HTTPException(413, "Trop de fichiers")
         recus, total = [], 0
@@ -189,8 +193,11 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
             if total > config.TAILLE_MAX_IMPORT:
                 raise HTTPException(413, "Fichier(s) trop volumineux")
             recus.append((f.filename or "", contenu))
+        complement = None
+        if completer_avec:
+            complement = JeuDeDonnees.model_validate(_jeu(request, completer_avec)["contenu"]["donnees"])
         try:
-            ds = ConnecteurFichier(recus).lire_donnees()
+            ds = ConnecteurFichier(recus, complement).lire_donnees()
         except ValidationError as e:
             raise HTTPException(422, {"message": "Données invalides", "erreurs": _erreurs_lisibles(e)})
         except ErreurImport as e:

@@ -22,6 +22,7 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Équipement fixe d'un local (PC, lit médicalisé…) | `Locaux.equipements`, `Cours.equipements` |
 | Matériel mobile en quantité limitée | `Ressources`, `Cours.ressources` |
 | Local attitré d'un groupe | `Groupes.local_prefere` |
+| Rythme **fixe** (mêmes jours/heures du début à la fin) ou **souple** (changements, pauses et reprises) | `Cours.rythme`, `Parametres.rythme_defaut` |
 | Plafond hebdomadaire d'un enseignant, rythme maximal d'un cours | `max_periodes_semaine`, `max_seances_semaine` |
 
 ## Import des données
@@ -41,6 +42,13 @@ Trois formats, mêmes tables :
 - **JSON** : la structure interne complète.
 
 Les modèles Excel et CSV sont téléchargeables depuis l'application et contiennent un exemple complet.
+La spécification détaillée des fichiers CSV, à transmettre à la personne qui configure l'export du
+logiciel de gestion, est dans [`docs/FORMAT_CSV.md`](docs/FORMAT_CSV.md).
+
+**Import partiel.** Il suffit de réinjecter ce que le logiciel de gestion exporte (modules, cours,
+attributions, groupes…). Avec l'option « Compléter ce qui manque avec », les autres tables (créneaux,
+locaux, congés, stages…) et les colonnes absentes (disponibilités des enseignants…) sont reprises d'un
+jeu existant. Les liens peuvent aussi être fournis une ligne par lien (`parcours.csv`, `prerequis.csv`).
 Les données importées peuvent aussi être réexportées en Excel ou en CSV, corrigées, puis réimportées.
 
 ## Le « moteur IA »
@@ -50,9 +58,10 @@ technique d'IA adaptée aux horaires : elle garantit que **toutes les contrainte
 respectées**, ce qu'un modèle de langage (type ChatGPT/Claude) ne sait pas garantir. Elle tourne
 aussi entièrement sur votre serveur : aucune donnée ne sort.
 
-**Modèle hebdomadaire récurrent.** Comme en pratique en formation pour adultes, chaque cours a lieu à
-jour et heure fixes (« le mardi soir, en A101, du 12/01 au 23/03 »), sur un ou plusieurs créneaux par
-semaine. Les séances réelles sont ensuite calculées date par date : jours fériés, vacances, stages et
+**Modèle hebdomadaire récurrent.** Chaque cours a lieu sur un ou plusieurs créneaux hebdomadaires
+(« le mardi soir, en A101, du 12/01 au 23/03 »). Un cours **souple** (par défaut) peut changer de
+créneau, faire une pause puis reprendre, ou changer de local. Le moteur favorise malgré tout la
+régularité. Un cours **fixe** garde les mêmes jours et heures du début à la fin. Les séances réelles sont ensuite calculées date par date : jours fériés, vacances, stages et
 absences ponctuelles sont sautés, et le cours se prolonge d'autant. Cette formulation reste compacte
 même pour un grand établissement.
 
@@ -112,6 +121,22 @@ uvicorn app.main:app --reload
 
 Ouvrez <http://localhost:8000>, connectez-vous, puis cliquez sur « Charger l'exemple » et « Planifier ».
 
+### Sur un poste Windows, pour tester
+
+Pré-requis : Python 3.12 ou plus récent ([python.org](https://www.python.org/downloads/), cochez
+« Add Python to PATH »). Dans PowerShell, depuis le dossier du projet :
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:HORAIRES_MODE_DEV="1"; $env:HORAIRES_COOKIE_SECURE="0"
+python -m scripts.creer_admin admin
+uvicorn app.main:app
+```
+
+Puis ouvrez <http://localhost:8000>. Les données restent sur le poste, dans le dossier `donnees`.
+
 ### En production (Docker + HTTPS)
 
 ```bash
@@ -128,7 +153,7 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 22 tests couvrent le moteur, les imports et la sécurité :
+Les 25 tests couvrent le moteur, les imports et la sécurité :
 - **moteur** : aucune double réservation (groupe, local, enseignant), respect de chaque contrainte,
   prérequis, co-enseignement, répartition entre enseignants, attributions par groupe, matériel et
   plafonds, salle fixe par créneau, signalement des manques, cohérence complète sur un établissement généré ;
