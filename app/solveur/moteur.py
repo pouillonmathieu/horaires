@@ -378,7 +378,7 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     solveur.parameters.num_workers = params.nb_threads
     total_manque = sum(manque.values())
     mdl.Minimize(total_manque)
-    solveur.parameters.max_time_in_seconds = max(5.0, D * 0.2)
+    solveur.parameters.max_time_in_seconds = max(5.0, D * 0.15)
     st1 = solveur.Solve(mdl)
     if st1 == cp_model.INFEASIBLE:
         return Resultat("IMPOSSIBLE", time.monotonic() - t0, alertes=alertes + [
@@ -399,7 +399,7 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
 
     # ---- phase A1 bis : réparation ciblée des cours incomplets (voisinages)
     if meilleur > 0 and not phase1_optimale:
-        sol, meilleur, info = _reparer(mdl, vars_uw, par_unite, unites, manque, sol, t0 + D * 0.6, params)
+        sol, meilleur, info = _reparer(mdl, vars_uw, par_unite, unites, manque, sol, t0 + D * 0.75, params)
         stats["reparation"] = {"periodes_manquantes": meilleur, **info}
 
     # ---- phase A2 : à volume égal, qualité de l'horaire
@@ -409,7 +409,7 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
     indice.values.extend(sol)
     mdl.Add(total_manque <= meilleur)
     mdl.Minimize(params.poids_fin * sum(fin_u.values()) + params.poids_compacite * sum(fin_u[i] - debut_u[i] for i in fin_u))
-    solveur.parameters.max_time_in_seconds = max(3.0, D * 0.85 - (time.monotonic() - t0))
+    solveur.parameters.max_time_in_seconds = max(3.0, D * 0.9 - (time.monotonic() - t0))
     st2 = solveur.Solve(mdl)
     if st2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         valeur = solveur.Value
