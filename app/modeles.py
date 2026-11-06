@@ -13,7 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 JOURS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
 
-Id = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9_.\-]{1,64}$")]
+# Identifiants : ceux du logiciel de gestion sont repris tels quels (espaces, « / », accents admis),
+# sauf les séparateurs de listes (; , |), « : » (format jour:créneau) et les caractères de balisage.
+Id = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[^;,|:<>\"'`\\\x00-\x1f\x7f]{1,64}$")]
 Texte = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 Heure = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 
@@ -133,7 +135,7 @@ class Enseignant(Strict):
     def _dispos(cls, v: list[str]) -> list[str]:
         out = []
         for motif in v:
-            m = re.fullmatch(r"\s*([a-zA-Z]{3})[a-zA-Z]*\s*:\s*([A-Za-z0-9_.\-]{1,64}|\*)\s*", motif)
+            m = re.fullmatch(r"\s*([a-zA-Z]{3})[a-zA-Z]*\s*:\s*([^;,|:<>\"'`\\\x00-\x1f]{1,64}?)\s*", motif)
             if not m:
                 raise ValueError(f"disponibilité « {motif} » invalide (format jour:creneau, ex. lun:soir ou mar:*)")
             out.append(f"{_jours_valides([m.group(1)])[0]}:{m.group(2)}")
@@ -147,16 +149,43 @@ class Enseignant(Strict):
         return not any(i.bloque(d, creneau_id) for i in self.indisponibilites)
 
 
-class Module(Strict):
-    """Unité d'enseignement / module de formation."""
+class Attribution(Strict):
+    """Part d'un cours confiée à un ou plusieurs enseignants.
+
+    * un enseignant  → cas courant ;
+    * plusieurs attributions d'un enseignant chacune → cours **réparti** (ex. 40 p. + 20 p.) ;
+    * une attribution à plusieurs enseignants → **co-enseignement** (présents ensemble à chaque séance).
+    """
+    enseignants: list[Id] = Field(min_length=1, max_length=10)
+    periodes: int = Field(ge=1, le=5000)
+    groupes: list[Id] = Field(default_factory=list, description="vide = tous les groupes qui suivent le module")
+
+
+class Cours(Strict):
+    """Cours (activité d'enseignement) d'un module."""
     id: Id
     nom: Texte = ""
     periodes: int = Field(ge=1, le=5000)
-    prerequis: list[Id] = Field(default_factory=list)
     equipements: list[Id] = Field(default_factory=list, description="équipement fixe requis dans le local")
     ressources: list[Id] = Field(default_factory=list, description="matériel mobile requis (1 unité par séance)")
-    enseignants: list[Id] = Field(default_factory=list, description="enseignants habilités")
     max_seances_semaine: int | None = Field(default=None, ge=1, le=50)
+    attributions: list[Attribution] = Field(min_length=1, max_length=50)
+
+    def attributions_pour(self, groupe_id: str) -> list[Attribution]:
+        propres = [a for a in self.attributions if groupe_id in a.groupes]
+        return propres or [a for a in self.attributions if not a.groupes]
+
+
+class Module(Strict):
+    """Module / unité d'enseignement : regroupe un ou plusieurs cours."""
+    id: Id
+    nom: Texte = ""
+    prerequis: list[Id] = Field(default_factory=list, description="modules à terminer avant de commencer celui-ci")
+    cours: list[Cours] = Field(min_length=1, max_length=50)
+
+    @property
+    def periodes(self) -> int:
+        return sum(c.periodes for c in self.cours)
 
 
 class Groupe(Strict):
@@ -168,6 +197,7 @@ class Groupe(Strict):
     creneaux: list[Id] = Field(default_factory=list, description="vide = tous les créneaux")
     date_debut: date | None = None
     date_fin: date | None = None
+    local_prefere: Id | None = Field(default=None, description="local attitré, utilisé en priorité")
     stages: list[Stage] = Field(default_factory=list)
 
     @field_validator("jours_cours")
@@ -198,11 +228,17 @@ class JeuDeDonnees(Strict):
             return vus
 
         creneaux = uniques("créneaux", self.calendrier.creneaux)
-        uniques("locaux", self.locaux)
+        locaux = uniques("locaux", self.locaux)
         ressources = uniques("ressources", self.ressources)
         enseignants = uniques("enseignants", self.enseignants)
         modules = uniques("modules", self.modules)
-        uniques("groupes", self.groupes)
+        uniques("cours", [c for m in self.modules for c in m.cours])
+        groupes = uniques("groupes", self.groupes)
+
+        cr = sorted(self.calendrier.creneaux, key=lambda c: c.heure_debut)
+        for a, b in zip(cr, cr[1:]):
+            if b.heure_debut < a.heure_fin:
+                erreurs.append(f"créneaux {a.id} et {b.id} : les plages horaires se chevauchent")
 
         for e in self.enseignants:
             for d in e.disponibilites:
@@ -214,22 +250,42 @@ class JeuDeDonnees(Strict):
         for l in self.locaux:
             for i in l.indisponibilites:
                 erreurs += [f"local {l.id} : créneau inconnu « {c} »" for c in i.creneaux if c not in creneaux]
+
+        suivi_par: dict[str, list[str]] = {}
+        for g in self.groupes:
+            for m in g.modules:
+                suivi_par.setdefault(m, []).append(g.id)
+
         for m in self.modules:
             erreurs += [f"module {m.id} : prérequis inconnu « {p} »" for p in m.prerequis if p not in modules]
-            erreurs += [f"module {m.id} : ressource inconnue « {r} »" for r in m.ressources if r not in ressources]
-            erreurs += [f"module {m.id} : enseignant inconnu « {e} »" for e in m.enseignants if e not in enseignants]
             if m.id in m.prerequis:
                 erreurs.append(f"module {m.id} : ne peut pas être son propre prérequis")
+            for c in m.cours:
+                erreurs += [f"cours {c.id} : ressource inconnue « {r} »" for r in c.ressources if r not in ressources]
+                for a in c.attributions:
+                    erreurs += [f"cours {c.id} : enseignant inconnu « {e} »" for e in a.enseignants if e not in enseignants]
+                    erreurs += [f"cours {c.id} : groupe inconnu « {g} » dans une attribution" for g in a.groupes if g not in groupes]
+                    if len(set(a.enseignants)) != len(a.enseignants):
+                        erreurs.append(f"cours {c.id} : enseignant répété dans une même attribution")
+                for gid in suivi_par.get(m.id, []):
+                    attr = c.attributions_pour(gid)
+                    total = sum(a.periodes for a in attr)
+                    if not attr:
+                        erreurs.append(f"cours {c.id} / groupe {gid} : aucune attribution d'enseignant")
+                    elif total != c.periodes:
+                        erreurs.append(f"cours {c.id} / groupe {gid} : attributions = {total} périodes "
+                                       f"pour {c.periodes} périodes de cours")
         for g in self.groupes:
             erreurs += [f"groupe {g.id} : module inconnu « {m} »" for m in g.modules if m not in modules]
             erreurs += [f"groupe {g.id} : créneau inconnu « {c} »" for c in g.creneaux if c not in creneaux]
+            if g.local_prefere and g.local_prefere not in locaux:
+                erreurs.append(f"groupe {g.id} : local préféré inconnu « {g.local_prefere} »")
             if len(set(g.modules)) != len(g.modules):
                 erreurs.append(f"groupe {g.id} : module listé plusieurs fois")
 
         if erreurs:
-            raise ValueError("\n".join(erreurs[:50]))
+            raise ValueError("\n".join(erreurs[:50]) + (f"\n… et {len(erreurs) - 50} autres erreurs" if len(erreurs) > 50 else ""))
         return self
 
-    # accès pratiques
     def module(self, mid: str) -> Module:
         return next(m for m in self.modules if m.id == mid)

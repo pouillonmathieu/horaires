@@ -100,7 +100,7 @@ def test_import_invalide_lisible(env):
     c, *_ = env
     h = {"X-CSRF-Token": connecter(c)}
     r = c.post("/api/jeux", headers=h, files={"fichier": ("x.txt", b"bonjour", "text/plain")})
-    assert r.status_code == 422 and "format non reconnu" in r.json()["detail"]["message"]
+    assert r.status_code == 422 and "non reconnu" in r.json()["detail"]["message"]
     r = c.post("/api/jeux", headers=h, files={"fichier": ("x.json", b'{"nom": "x"}', "application/json")})
     assert r.status_code == 422 and r.json()["detail"]["erreurs"]
 
@@ -110,7 +110,7 @@ def test_parcours_complet(env):
     h = {"X-CSRF-Token": connecter(c)}
     modele = c.get("/api/modele.xlsx").content
     jid = c.post("/api/jeux", headers=h, files={"fichier": ("m.xlsx", modele, "application/octet-stream")}).json()["id"]
-    hid = c.post(f"/api/jeux/{jid}/planifier", headers=h, json={"duree_max_s": 20}).json()["id"]
+    hid = c.post(f"/api/jeux/{jid}/planifier", headers=h, json={"duree_max_s": 15}).json()["id"]
     for _ in range(120):
         x = c.get(f"/api/horaires/{hid}").json()
         if x["statut"] != "en_cours":
@@ -118,6 +118,22 @@ def test_parcours_complet(env):
         time.sleep(0.5)
     assert x["statut"] in ("OPTIMAL", "REALISABLE")
     assert c.get(f"/api/horaires/{hid}/horaire.xlsx").status_code == 200
+    assert b"BEGIN:VEVENT" in c.get(f"/api/horaires/{hid}/horaire.ics?type=enseignant&id=MERTENS").content
     assert b"BEGIN:VEVENT" in c.get(f"/api/horaires/{hid}/horaire.ics?type=groupe&id=AS1").content
     actions = [l["action"] for l in c.get("/api/journal").json()["lignes"]]
     assert {"connexion", "import_donnees", "planification", "export_horaire"} <= set(actions)
+
+
+def test_import_csv_multiple(env):
+    c, *_ = env
+    h = {"X-CSRF-Token": connecter(c)}
+    import io
+    import zipfile
+    z = c.get("/api/modele-csv.zip").content
+    with zipfile.ZipFile(io.BytesIO(z)) as zf:
+        fichiers = [("fichier", (n, zf.read(n), "text/csv")) for n in zf.namelist()]
+    r = c.post("/api/jeux", headers=h, files=fichiers)
+    assert r.status_code == 200, r.text
+    assert r.json()["nb_cours"] == 14
+    r = c.post("/api/jeux", headers=h, files={"fichier": ("export.zip", z, "application/zip")})
+    assert r.status_code == 200

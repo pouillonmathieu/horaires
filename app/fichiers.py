@@ -5,11 +5,14 @@ séparées par « ; » (ex. « lun;mar;jeu »). Voir le modèle téléchargeable
 """
 from __future__ import annotations
 
+import csv
 import io
 import json
+import re
+import unicodedata
 import zipfile
 from datetime import date, datetime, time as dtime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
@@ -27,23 +30,32 @@ ONGLETS: dict[str, list[str]] = {
     "Ressources": ["id", "nom", "quantite"],
     "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine"],
     "Indisponibilites": ["type", "id", "date_debut", "date_fin", "creneaux", "motif"],
-    "Modules": ["id", "nom", "periodes", "prerequis", "equipements", "ressources", "enseignants", "max_seances_semaine"],
-    "Groupes": ["id", "nom", "effectif", "modules", "jours_cours", "creneaux", "date_debut", "date_fin"],
+    "Modules": ["id", "nom", "prerequis"],
+    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine"],
+    "Attributions": ["cours", "enseignants", "periodes", "groupes"],
+    "Groupes": ["id", "nom", "effectif", "modules", "jours_cours", "creneaux", "date_debut", "date_fin", "local_prefere"],
     "Stages": ["groupe", "date_debut", "date_fin", "jours", "motif"],
 }
 
 AIDE = {
-    "Parametres": "nom, date_debut, date_fin (AAAA-MM-JJ), jours_cours (ex. lun;mar;mer;jeu;ven)",
+    "Parametres": "nom, date_debut, date_fin (AAAA-MM-JJ ou JJ/MM/AAAA), jours_cours (ex. lun;mar;mer;jeu;ven)",
     "Creneaux": "Plages horaires d'une journée. « periodes » = nombre de périodes de cours du créneau.",
     "Fermetures": "Jours fériés, congés et vacances (une ligne par période ; un jour isolé : début = fin).",
     "Locaux": "Capacité en places assises ; équipements fixes séparés par « ; » (ex. pc;projecteur).",
     "Ressources": "Matériel mobile partagé, en nombre d'unités (1 unité mobilisée par séance).",
     "Enseignants": "Disponibilités : jour:creneau séparés par « ; » (ex. lun:soir;mer:*). Vide = toujours disponible.",
     "Indisponibilites": "type = enseignant ou local. Créneaux vides = journée entière.",
-    "Modules": "Prérequis, équipements, ressources et enseignants habilités séparés par « ; ».",
-    "Groupes": "Modules du parcours séparés par « ; ». Jours/créneaux vides = ceux du calendrier.",
+    "Modules": "Un module (unité d'enseignement) regroupe des cours. Prérequis : modules à terminer avant, séparés par « ; ».",
+    "Cours": "Cours (activités d'enseignement) d'un module, avec leur nombre de périodes et leurs besoins en local/matériel.",
+    "Attributions": "Qui donne le cours. Plusieurs lignes pour un cours = cours réparti (ex. 40 p. + 20 p.). "
+                    "Plusieurs enseignants sur une ligne = co-enseignement (présents ensemble). "
+                    "« groupes » : attribution propre à certains groupes (vide = tous).",
+    "Groupes": "Modules du parcours séparés par « ; ». Jours/créneaux vides = ceux du calendrier. Local préféré facultatif.",
     "Stages": "Périodes de stage d'un groupe (pas de cours). Jours vides = tous les jours de la période.",
 }
+
+MAX_FICHIERS_ZIP = 50
+MAX_LIGNES = 50_000
 
 
 class ErreurImport(ValueError):
@@ -54,7 +66,7 @@ class ErreurImport(ValueError):
 def _liste(v: Any) -> list[str]:
     if v is None:
         return []
-    return [p.strip() for p in str(v).replace(",", ";").split(";") if p.strip()]
+    return [p.strip() for p in re.split(r"[;,|]", str(v)) if p.strip()]
 
 
 def _date(v: Any) -> str | None:
@@ -64,34 +76,64 @@ def _date(v: Any) -> str | None:
         return v.date().isoformat()
     if isinstance(v, date):
         return v.isoformat()
-    return str(v).strip()
+    s = str(v).strip()
+    m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:\s.*)?", s)
+    if m:  # format belge JJ/MM/AAAA
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    return s[:10] if re.match(r"\d{4}-\d{2}-\d{2}", s) else s
 
 
 def _heure(v: Any) -> str:
     if isinstance(v, (dtime, datetime)):
         return v.strftime("%H:%M")
-    s = str(v).strip().replace("h", ":")
-    return s if len(s) == 5 else s.zfill(5)
+    s = str(v).strip().lower().replace("h", ":").replace(".", ":")
+    if s.endswith(":"):
+        s += "00"
+    h, _, m = s.partition(":")
+    return f"{int(h):02d}:{int(m or 0):02d}" if h.isdigit() and (m or "0").isdigit() else s
 
 
 def _entier(v: Any) -> int | None:
     if v in (None, ""):
         return None
-    return int(float(v))
+    return int(float(str(v).replace(",", ".").strip()))
 
 
-def _lignes(wb, onglet: str) -> list[dict]:
-    if onglet not in wb.sheetnames:
-        return []
-    ws = wb[onglet]
-    rows = ws.iter_rows(values_only=True)
+def _texte(v: Any) -> str:
+    return "" if v is None else str(v).strip()
+
+
+def _cle(nom: str) -> str:
+    """Normalise un nom d'onglet, de fichier ou de colonne : minuscules, sans accents ni espaces."""
+    nom = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode().lower().strip()
+    return re.sub(r"[^a-z0-9]+", "_", nom).strip("_")
+
+
+ONGLETS_NORMALISES = {_cle(o): o for o in ONGLETS}
+
+
+def _verifier_zip(contenu: bytes, quoi: str = "classeur Excel (.xlsx)") -> zipfile.ZipFile:
     try:
-        entetes = [str(h).strip().lower() if h is not None else "" for h in next(rows)]
+        z = zipfile.ZipFile(io.BytesIO(contenu))
+    except zipfile.BadZipFile as e:
+        raise ErreurImport(f"ce fichier n'est pas un {quoi} valide") from e
+    if sum(i.file_size for i in z.infolist()) > MAX_DECOMPRESSE:
+        raise ErreurImport("fichier trop volumineux une fois décompressé")
+    return z
+
+
+def _lignes_excel(wb, onglet: str) -> list[dict]:
+    nom = next((n for n in wb.sheetnames if _cle(n) == _cle(onglet)), None)
+    if nom is None:
+        return []
+    rows = wb[nom].iter_rows(values_only=True)
+    try:
+        entetes = [_cle(str(h)) if h is not None else "" for h in next(rows)]
     except StopIteration:
         return []
     out = []
     for i, row in enumerate(rows, start=2):
-        if i > 20000:
+        if i > MAX_LIGNES:
             raise ErreurImport(f"onglet {onglet} : trop de lignes")
         if row is None or all(c in (None, "") for c in row):
             continue
@@ -103,99 +145,191 @@ def _lignes(wb, onglet: str) -> list[dict]:
     return out
 
 
-def _verifier_zip(contenu: bytes) -> None:
-    try:
-        with zipfile.ZipFile(io.BytesIO(contenu)) as z:
-            if sum(i.file_size for i in z.infolist()) > MAX_DECOMPRESSE:
-                raise ErreurImport("fichier Excel trop volumineux une fois décompressé")
-    except zipfile.BadZipFile as e:
-        raise ErreurImport("ce fichier n'est pas un classeur Excel (.xlsx) valide") from e
+def _decoder_csv(contenu: bytes) -> str:
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return contenu.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise ErreurImport("encodage du fichier CSV non reconnu (attendu : UTF-8 ou Windows-1252)")
 
 
-def excel_vers_donnees(contenu: bytes) -> JeuDeDonnees:
-    _verifier_zip(contenu)
-    wb = load_workbook(io.BytesIO(contenu), read_only=True, data_only=True)
+def _lignes_csv(contenu: bytes, nom: str) -> list[dict]:
+    texte = _decoder_csv(contenu)
+    premiere = texte.split("\n", 1)[0]
+    sep = max([";", ",", "\t"], key=premiere.count)
+    lecteur = csv.reader(io.StringIO(texte), delimiter=sep)
     try:
-        params = {str(r["cle"]).strip(): r.get("valeur") for r in _lignes(wb, "Parametres") if r.get("cle")}
+        entetes = [_cle(h) for h in next(lecteur)]
+    except StopIteration:
+        return []
+    out = []
+    for i, row in enumerate(lecteur, start=2):
+        if i > MAX_LIGNES:
+            raise ErreurImport(f"{nom} : trop de lignes")
+        if not any(c.strip() for c in row) or row[0].strip().startswith("#"):
+            continue
+        d = {h: (row[j].strip() or None) if j < len(row) else None for j, h in enumerate(entetes) if h}
+        d["_ligne"] = i
+        out.append(d)
+    return out
+
+
+def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str) -> JeuDeDonnees:
+    """Construit le jeu de données à partir de tables (onglets Excel ou fichiers CSV)."""
+    def obligatoire(r: dict, col: str, table: str):
+        v = r.get(col)
+        if v in (None, ""):
+            raise ErreurImport(f"{table}, ligne {r['_ligne']} : la colonne « {col} » est vide ou absente")
+        return v
+
+    try:
+        params = {_cle(str(r["cle"])): r.get("valeur") for r in lire("Parametres") if r.get("cle")}
         if not {"date_debut", "date_fin"} <= params.keys():
-            raise ErreurImport("onglet Parametres : date_debut et date_fin sont obligatoires")
+            raise ErreurImport("Parametres : date_debut et date_fin sont obligatoires")
 
         indispos = {"enseignant": {}, "local": {}}
-        for r in _lignes(wb, "Indisponibilites"):
-            t = str(r.get("type") or "").strip().lower()
+        for r in lire("Indisponibilites"):
+            t = _cle(_texte(r.get("type")))
             if t not in indispos:
-                raise ErreurImport(f"onglet Indisponibilites ligne {r['_ligne']} : type doit être « enseignant » ou « local »")
-            indispos[t].setdefault(str(r["id"]).strip(), []).append({
+                raise ErreurImport(f"Indisponibilites, ligne {r['_ligne']} : type doit être « enseignant » ou « local »")
+            indispos[t].setdefault(_texte(obligatoire(r, "id", "Indisponibilites")), []).append({
                 "date_debut": _date(r.get("date_debut")),
                 "date_fin": _date(r.get("date_fin")) or _date(r.get("date_debut")),
-                "creneaux": _liste(r.get("creneaux")),
-                "motif": str(r.get("motif") or ""),
+                "creneaux": _liste(r.get("creneaux")), "motif": _texte(r.get("motif")),
             })
         stages: dict[str, list] = {}
-        for r in _lignes(wb, "Stages"):
-            stages.setdefault(str(r["groupe"]).strip(), []).append({
+        for r in lire("Stages"):
+            stages.setdefault(_texte(obligatoire(r, "groupe", "Stages")), []).append({
                 "date_debut": _date(r.get("date_debut")),
                 "date_fin": _date(r.get("date_fin")) or _date(r.get("date_debut")),
-                "jours": _liste(r.get("jours")),
-                "motif": str(r.get("motif") or ""),
+                "jours": _liste(r.get("jours")), "motif": _texte(r.get("motif")),
             })
+        attributions: dict[str, list] = {}
+        for r in lire("Attributions"):
+            attributions.setdefault(_texte(obligatoire(r, "cours", "Attributions")), []).append({
+                "enseignants": _liste(obligatoire(r, "enseignants", "Attributions")),
+                "periodes": _entier(obligatoire(r, "periodes", "Attributions")),
+                "groupes": _liste(r.get("groupes")),
+            })
+        cours_par_module: dict[str, list] = {}
+        for r in lire("Cours"):
+            cid = _texte(obligatoire(r, "id", "Cours"))
+            cours_par_module.setdefault(_texte(obligatoire(r, "module", "Cours")), []).append({
+                "id": cid, "nom": _texte(r.get("nom")), "periodes": _entier(obligatoire(r, "periodes", "Cours")),
+                "equipements": _liste(r.get("equipements")), "ressources": _liste(r.get("ressources")),
+                "max_seances_semaine": _entier(r.get("max_seances_semaine")),
+                "attributions": attributions.pop(cid, []),
+            })
+        if attributions:
+            raise ErreurImport(f"Attributions : cours inconnu(s) : {', '.join(sorted(attributions)[:10])}")
+
+        modules = []
+        for r in lire("Modules"):
+            mid = _texte(obligatoire(r, "id", "Modules"))
+            modules.append({"id": mid, "nom": _texte(r.get("nom")), "prerequis": _liste(r.get("prerequis")),
+                            "cours": cours_par_module.pop(mid, [])})
+        if cours_par_module:
+            raise ErreurImport(f"Cours : module(s) inconnu(s) : {', '.join(sorted(cours_par_module)[:10])}")
 
         brut = {
-            "nom": str(params.get("nom") or "Import Excel"),
+            "nom": _texte(params.get("nom")) or nom_defaut,
             "calendrier": {
                 "date_debut": _date(params["date_debut"]),
                 "date_fin": _date(params["date_fin"]),
                 **({"jours_cours": _liste(params["jours_cours"])} if params.get("jours_cours") else {}),
                 "creneaux": [
-                    {"id": str(r["id"]), "libelle": str(r.get("libelle") or ""), "heure_debut": _heure(r["heure_debut"]),
-                     "heure_fin": _heure(r["heure_fin"]), "periodes": _entier(r["periodes"])}
-                    for r in _lignes(wb, "Creneaux")
+                    {"id": _texte(obligatoire(r, "id", "Creneaux")), "libelle": _texte(r.get("libelle")),
+                     "heure_debut": _heure(obligatoire(r, "heure_debut", "Creneaux")),
+                     "heure_fin": _heure(obligatoire(r, "heure_fin", "Creneaux")),
+                     "periodes": _entier(obligatoire(r, "periodes", "Creneaux"))}
+                    for r in lire("Creneaux")
                 ],
                 "fermetures": [
-                    {"date_debut": _date(r["date_debut"]), "date_fin": _date(r.get("date_fin")) or _date(r["date_debut"]),
-                     "motif": str(r.get("motif") or "")}
-                    for r in _lignes(wb, "Fermetures")
+                    {"date_debut": _date(obligatoire(r, "date_debut", "Fermetures")),
+                     "date_fin": _date(r.get("date_fin")) or _date(r["date_debut"]), "motif": _texte(r.get("motif"))}
+                    for r in lire("Fermetures")
                 ],
             },
             "locaux": [
-                {"id": str(r["id"]), "nom": str(r.get("nom") or ""), "capacite": _entier(r["capacite"]),
-                 "equipements": _liste(r.get("equipements")), "indisponibilites": indispos["local"].get(str(r["id"]), [])}
-                for r in _lignes(wb, "Locaux")
+                {"id": _texte(obligatoire(r, "id", "Locaux")), "nom": _texte(r.get("nom")),
+                 "capacite": _entier(obligatoire(r, "capacite", "Locaux")), "equipements": _liste(r.get("equipements")),
+                 "indisponibilites": indispos["local"].get(_texte(r["id"]), [])}
+                for r in lire("Locaux")
             ],
             "ressources": [
-                {"id": str(r["id"]), "nom": str(r.get("nom") or ""), "quantite": _entier(r["quantite"])}
-                for r in _lignes(wb, "Ressources")
+                {"id": _texte(obligatoire(r, "id", "Ressources")), "nom": _texte(r.get("nom")),
+                 "quantite": _entier(obligatoire(r, "quantite", "Ressources"))}
+                for r in lire("Ressources")
             ],
             "enseignants": [
-                {"id": str(r["id"]), "nom": str(r.get("nom") or ""), "disponibilites": _liste(r.get("disponibilites")),
+                {"id": _texte(obligatoire(r, "id", "Enseignants")), "nom": _texte(r.get("nom")),
+                 "disponibilites": _liste(r.get("disponibilites")),
                  "max_periodes_semaine": _entier(r.get("max_periodes_semaine")),
-                 "indisponibilites": indispos["enseignant"].get(str(r["id"]), [])}
-                for r in _lignes(wb, "Enseignants")
+                 "indisponibilites": indispos["enseignant"].get(_texte(r["id"]), [])}
+                for r in lire("Enseignants")
             ],
-            "modules": [
-                {"id": str(r["id"]), "nom": str(r.get("nom") or ""), "periodes": _entier(r["periodes"]),
-                 "prerequis": _liste(r.get("prerequis")), "equipements": _liste(r.get("equipements")),
-                 "ressources": _liste(r.get("ressources")), "enseignants": _liste(r.get("enseignants")),
-                 "max_seances_semaine": _entier(r.get("max_seances_semaine"))}
-                for r in _lignes(wb, "Modules")
-            ],
+            "modules": modules,
             "groupes": [
-                {"id": str(r["id"]), "nom": str(r.get("nom") or ""), "effectif": _entier(r["effectif"]),
+                {"id": _texte(obligatoire(r, "id", "Groupes")), "nom": _texte(r.get("nom")),
+                 "effectif": _entier(obligatoire(r, "effectif", "Groupes")),
                  "modules": _liste(r.get("modules")), "jours_cours": _liste(r.get("jours_cours")),
                  "creneaux": _liste(r.get("creneaux")), "date_debut": _date(r.get("date_debut")),
-                 "date_fin": _date(r.get("date_fin")), "stages": stages.get(str(r["id"]), [])}
-                for r in _lignes(wb, "Groupes")
+                 "date_fin": _date(r.get("date_fin")), "local_prefere": _texte(r.get("local_prefere")) or None,
+                 "stages": stages.get(_texte(r["id"]), [])}
+                for r in lire("Groupes")
             ],
         }
-    except KeyError as e:
-        raise ErreurImport(f"colonne obligatoire manquante : {e.args[0]}") from e
     except (TypeError, ValueError) as e:
         if isinstance(e, ErreurImport):
             raise
         raise ErreurImport(f"valeur illisible : {e}") from e
+    return JeuDeDonnees.model_validate(brut)
+
+
+def excel_vers_donnees(contenu: bytes) -> JeuDeDonnees:
+    _verifier_zip(contenu).close()
+    wb = load_workbook(io.BytesIO(contenu), read_only=True, data_only=True)
+    try:
+        return tables_vers_donnees(lambda onglet: _lignes_excel(wb, onglet), "Import Excel")
     finally:
         wb.close()
-    return JeuDeDonnees.model_validate(brut)
+
+
+def csv_vers_donnees(fichiers: list[tuple[str, bytes]]) -> JeuDeDonnees:
+    """Un fichier CSV par table, nommé comme l'onglet Excel correspondant (ex. cours.csv, attributions.csv).
+
+    `fichiers` peut contenir des CSV et/ou des archives ZIP de CSV.
+    """
+    tables: dict[str, bytes] = {}
+    inconnus = []
+
+    def ajouter(nom: str, contenu: bytes):
+        base = _cle(nom.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].rsplit(".", 1)[0])
+        if base not in ONGLETS_NORMALISES:
+            inconnus.append(nom)
+            return
+        tables[ONGLETS_NORMALISES[base]] = contenu
+
+    for nom, contenu in fichiers:
+        if contenu.startswith(b"PK\x03\x04"):
+            with _verifier_zip(contenu, "fichier ZIP") as z:
+                membres = [i for i in z.infolist() if not i.is_dir() and i.filename.lower().endswith(".csv")]
+                if len(membres) > MAX_FICHIERS_ZIP:
+                    raise ErreurImport("archive ZIP : trop de fichiers")
+                for i in membres:
+                    ajouter(i.filename, z.read(i))
+        else:
+            ajouter(nom, contenu)
+    if inconnus:
+        raise ErreurImport(f"fichier(s) CSV non reconnu(s) : {', '.join(inconnus[:10])}. "
+                           f"Noms attendus : {', '.join(o.lower() + '.csv' for o in ONGLETS)}")
+    manquants = [o for o in ("Parametres", "Creneaux", "Locaux", "Enseignants", "Modules", "Cours", "Attributions", "Groupes")
+                 if o not in tables]
+    if manquants:
+        raise ErreurImport(f"fichier(s) CSV manquant(s) : {', '.join(m.lower() + '.csv' for m in manquants)}")
+    cache = {o: _lignes_csv(c, f"{o.lower()}.csv") for o, c in tables.items()}
+    return tables_vers_donnees(lambda onglet: cache.get(onglet, []), "Import CSV")
 
 
 def json_vers_donnees(contenu: bytes) -> JeuDeDonnees:
@@ -229,57 +363,74 @@ def _j(v: list) -> str:
     return ";".join(v)
 
 
+def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
+    cal = ds.calendrier
+    indis = [["enseignant", e.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for e in ds.enseignants for i in e.indisponibilites]
+    indis += [["local", l.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for l in ds.locaux for i in l.indisponibilites]
+    return {
+        "Parametres": [["nom", ds.nom], ["date_debut", cal.date_debut], ["date_fin", cal.date_fin],
+                       ["jours_cours", _j(cal.jours_cours)]],
+        "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes] for c in cal.creneaux],
+        "Fermetures": [[f.date_debut, f.date_fin, f.motif] for f in cal.fermetures],
+        "Locaux": [[l.id, l.nom, l.capacite, _j(l.equipements)] for l in ds.locaux],
+        "Ressources": [[r.id, r.nom, r.quantite] for r in ds.ressources],
+        "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine] for e in ds.enseignants],
+        "Indisponibilites": indis,
+        "Modules": [[m.id, m.nom, _j(m.prerequis)] for m in ds.modules],
+        "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine]
+                  for m in ds.modules for c in m.cours],
+        "Attributions": [[c.id, _j(a.enseignants), a.periodes, _j(a.groupes)]
+                         for m in ds.modules for c in m.cours for a in c.attributions],
+        "Groupes": [[g.id, g.nom, g.effectif, _j(g.modules), _j(g.jours_cours), _j(g.creneaux), g.date_debut, g.date_fin,
+                     g.local_prefere] for g in ds.groupes],
+        "Stages": [[g.id, s.date_debut, s.date_fin, _j(s.jours), s.motif] for g in ds.groupes for s in g.stages],
+    }
+
+
 def donnees_vers_excel(ds: JeuDeDonnees) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
-    cal = ds.calendrier
-    _feuille(wb, "Parametres", ONGLETS["Parametres"], [
-        ["nom", ds.nom], ["date_debut", cal.date_debut], ["date_fin", cal.date_fin], ["jours_cours", _j(cal.jours_cours)],
-    ], AIDE["Parametres"])
-    _feuille(wb, "Creneaux", ONGLETS["Creneaux"],
-             [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes] for c in cal.creneaux], AIDE["Creneaux"])
-    _feuille(wb, "Fermetures", ONGLETS["Fermetures"],
-             [[f.date_debut, f.date_fin, f.motif] for f in cal.fermetures], AIDE["Fermetures"])
-    _feuille(wb, "Locaux", ONGLETS["Locaux"],
-             [[l.id, l.nom, l.capacite, _j(l.equipements)] for l in ds.locaux], AIDE["Locaux"])
-    _feuille(wb, "Ressources", ONGLETS["Ressources"],
-             [[r.id, r.nom, r.quantite] for r in ds.ressources], AIDE["Ressources"])
-    _feuille(wb, "Enseignants", ONGLETS["Enseignants"],
-             [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine] for e in ds.enseignants], AIDE["Enseignants"])
-    indis = [["enseignant", e.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for e in ds.enseignants for i in e.indisponibilites]
-    indis += [["local", l.id, i.date_debut, i.date_fin, _j(i.creneaux), i.motif] for l in ds.locaux for i in l.indisponibilites]
-    _feuille(wb, "Indisponibilites", ONGLETS["Indisponibilites"], indis, AIDE["Indisponibilites"])
-    _feuille(wb, "Modules", ONGLETS["Modules"], [
-        [m.id, m.nom, m.periodes, _j(m.prerequis), _j(m.equipements), _j(m.ressources), _j(m.enseignants), m.max_seances_semaine]
-        for m in ds.modules
-    ], AIDE["Modules"])
-    _feuille(wb, "Groupes", ONGLETS["Groupes"], [
-        [g.id, g.nom, g.effectif, _j(g.modules), _j(g.jours_cours), _j(g.creneaux), g.date_debut, g.date_fin]
-        for g in ds.groupes
-    ], AIDE["Groupes"])
-    _feuille(wb, "Stages", ONGLETS["Stages"],
-             [[g.id, s.date_debut, s.date_fin, _j(s.jours), s.motif] for g in ds.groupes for s in g.stages], AIDE["Stages"])
+    for onglet, lignes in donnees_vers_tables(ds).items():
+        _feuille(wb, onglet, ONGLETS[onglet], lignes, AIDE[onglet])
     buf = io.BytesIO()
     wb.save(buf)
+    return buf.getvalue()
+
+
+def donnees_vers_csv_zip(ds: JeuDeDonnees) -> bytes:
+    """Un CSV par table (UTF-8 avec BOM, séparateur « ; » : s'ouvre directement dans Excel)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for onglet, lignes in donnees_vers_tables(ds).items():
+            texte = io.StringIO()
+            w = csv.writer(texte, delimiter=";", lineterminator="\r\n")
+            w.writerow(ONGLETS[onglet])
+            w.writerows([["" if v is None else v for v in l] for l in lignes])
+            z.writestr(f"{onglet.lower()}.csv", "\ufeff" + texte.getvalue())
     return buf.getvalue()
 
 
 def horaire_vers_excel(resultat: dict, titre: str) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
-    cols = ["date", "jour", "heure_debut", "heure_fin", "periodes", "groupe", "groupe_nom", "module", "module_nom", "local", "enseignant"]
+    cols = ["date", "jour", "heure_debut", "heure_fin", "periodes", "groupe", "groupe_nom", "module", "module_nom",
+            "cours", "cours_nom", "local", "enseignant"]
     _feuille(wb, "Seances", cols, [[s[c] for c in cols] for s in resultat["seances"]])
-    cols_s = ["groupe", "module", "module_nom", "enseignant", "periodes_requises", "periodes_planifiees",
-              "periodes_manquantes", "nb_seances", "premiere_seance", "derniere_seance"]
-    ws = _feuille(wb, "Synthese", cols_s, [[s[c] for c in cols_s] for s in resultat["synthese"]])
+    cols_s = ["groupe", "module", "module_nom", "cours", "cours_nom", "enseignant", "periodes_requises",
+              "periodes_planifiees", "periodes_manquantes", "creneaux_hebdo", "locaux", "nb_seances",
+              "premiere_seance", "derniere_seance"]
+    lignes = [[_j(s[c]) if isinstance(s[c], list) else s[c] for c in cols_s] for s in resultat["synthese"]]
+    ws = _feuille(wb, "Synthese", cols_s, lignes)
     rouge = PatternFill("solid", fgColor="F8CBAD")
-    for row in ws.iter_rows(min_row=2, max_row=1 + len(resultat["synthese"])):
-        if row[6].value:
+    i_manque = cols_s.index("periodes_manquantes")
+    for row in ws.iter_rows(min_row=2, max_row=1 + len(lignes)):
+        if row[i_manque].value:
             for c in row:
                 c.fill = rouge
     for gid in sorted({s["groupe"] for s in resultat["seances"]}):
-        cols_g = ["date", "jour", "heure_debut", "heure_fin", "module_nom", "local", "enseignant"]
-        _feuille(wb, f"Groupe {gid}"[:31], cols_g, [[s[c] for c in cols_g] for s in resultat["seances"] if s["groupe"] == gid])
+        cols_g = ["date", "jour", "heure_debut", "heure_fin", "module_nom", "cours_nom", "local", "enseignant"]
+        _feuille(wb, re.sub(r"[\\/?*\[\]:]", "-", f"Groupe {gid}")[:31], cols_g,
+                 [[s[c] for c in cols_g] for s in resultat["seances"] if s["groupe"] == gid])
     wb.properties.title = titre[:200]
     buf = io.BytesIO()
     wb.save(buf)
@@ -320,7 +471,7 @@ def horaire_vers_ics(seances: list[dict], horaire_id: str) -> bytes:
             f"DTSTAMP:{maintenant}",
             f"DTSTART;TZID=Europe/Brussels:{d}T{s['heure_debut'].replace(':', '')}00",
             f"DTEND;TZID=Europe/Brussels:{d}T{s['heure_fin'].replace(':', '')}00",
-            f"SUMMARY:{_ics_echap(s['module_nom'] or s['module'])} ({_ics_echap(s['groupe'])})",
+            f"SUMMARY:{_ics_echap(s.get('cours_nom') or s['module_nom'] or s['module'])} ({_ics_echap(s['groupe'])})",
             f"LOCATION:{_ics_echap(s['local'])}",
             f"DESCRIPTION:{_ics_echap('Enseignant : ' + str(s['enseignant']))}",
             "END:VEVENT",

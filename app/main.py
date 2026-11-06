@@ -19,7 +19,9 @@ from . import config
 from .chiffrement import Chiffreur
 from .connecteurs import ConnecteurFichier
 from .exemple import jeu_exemple
-from .fichiers import ErreurImport, donnees_vers_excel, donnees_vers_json, horaire_vers_excel, horaire_vers_ics
+from .fichiers import (
+    ErreurImport, donnees_vers_csv_zip, donnees_vers_excel, donnees_vers_json, horaire_vers_excel, horaire_vers_ics,
+)
 from .modeles import JeuDeDonnees
 from .securite import (
     NOM_COOKIE, ROLES, AntiForceBrute, Utilisateur, empreinte_jeton, exige, hacher_mot_de_passe, ip_client,
@@ -45,7 +47,7 @@ class ChangementMdp(BaseModel):
 
 
 class DemandePlanif(BaseModel):
-    duree_max_s: int = Field(30, ge=5, le=config.DUREE_MAX_SOLVEUR_S)
+    duree_max_s: int = Field(120, ge=10, le=config.DUREE_MAX_SOLVEUR_S)
     poids_compacite: int = Field(1, ge=0, le=100)
 
 
@@ -164,20 +166,31 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
     def _enregistrer_jeu(request: Request, u: Utilisateur, ds: JeuDeDonnees, source: str) -> dict:
         diag = avant_planification(ds)
         entete = {"nom": ds.nom, "source": source, "nb_groupes": len(ds.groupes), "nb_modules": len(ds.modules),
+                  "nb_cours": sum(len(m.cours) for m in ds.modules),
                   "nb_enseignants": len(ds.enseignants), "nb_locaux": len(ds.locaux),
                   "nb_erreurs": sum(d["niveau"] == "erreur" for d in diag)}
         jid = st(request).creer_jeu(u.id, entete, {"donnees": ds.model_dump(mode="json"), "diagnostic": diag})
         st(request).journaliser(u.identifiant, "import_donnees", jid, ip_client(request))
         return {"id": jid, **entete, "diagnostic": diag}
 
+    @app.get("/api/modele-csv.zip")
+    def modele_csv(u: Utilisateur = Depends(utilisateur_courant)):
+        return _fichier(donnees_vers_csv_zip(jeu_exemple()), "modele_horaires_csv.zip", "application/zip")
+
     @app.post("/api/jeux")
-    async def importer(request: Request, fichier: UploadFile = File(...), nom: str = Form(""),
+    async def importer(request: Request, fichier: list[UploadFile] = File(...), nom: str = Form(""),
                        u: Utilisateur = Depends(exige("planificateur"))):
-        contenu = await fichier.read(config.TAILLE_MAX_IMPORT + 1)
-        if len(contenu) > config.TAILLE_MAX_IMPORT:
-            raise HTTPException(413, "Fichier trop volumineux")
+        if len(fichier) > 20:
+            raise HTTPException(413, "Trop de fichiers")
+        recus, total = [], 0
+        for f in fichier:
+            contenu = await f.read(config.TAILLE_MAX_IMPORT + 1)
+            total += len(contenu)
+            if total > config.TAILLE_MAX_IMPORT:
+                raise HTTPException(413, "Fichier(s) trop volumineux")
+            recus.append((f.filename or "", contenu))
         try:
-            ds = ConnecteurFichier(contenu, fichier.filename or "").lire_donnees()
+            ds = ConnecteurFichier(recus).lire_donnees()
         except ValidationError as e:
             raise HTTPException(422, {"message": "Données invalides", "erreurs": _erreurs_lisibles(e)})
         except ErreurImport as e:
@@ -213,6 +226,12 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
         ds = JeuDeDonnees.model_validate(_jeu(request, jid)["contenu"]["donnees"])
         st(request).journaliser(u.identifiant, "export_donnees", jid, ip_client(request))
         return _fichier(donnees_vers_json(ds), "donnees.json", "application/json")
+
+    @app.get("/api/jeux/{jid}/donnees-csv.zip")
+    def exporter_jeu_csv(jid: str, request: Request, u: Utilisateur = Depends(utilisateur_courant)):
+        ds = JeuDeDonnees.model_validate(_jeu(request, jid)["contenu"]["donnees"])
+        st(request).journaliser(u.identifiant, "export_donnees", jid, ip_client(request))
+        return _fichier(donnees_vers_csv_zip(ds), "donnees_csv.zip", "application/zip")
 
     @app.delete("/api/jeux/{jid}")
     def supprimer_jeu(jid: str, request: Request, u: Utilisateur = Depends(exige("planificateur"))):
@@ -271,8 +290,10 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
         if not h["contenu"]:
             raise HTTPException(409, "Horaire non disponible")
         seances = h["contenu"]["seances"]
-        if type in ("groupe", "enseignant", "local") and id:
+        if type in ("groupe", "local") and id:
             seances = [s for s in seances if s[type] == id]
+        elif type == "enseignant" and id:
+            seances = [s for s in seances if id in s["enseignants"]]
         st(request).journaliser(u.identifiant, "export_horaire_ics", hid, ip_client(request))
         nom = re.sub(r"[^A-Za-z0-9_.-]", "_", f"horaire_{id or 'complet'}")[:60]
         return _fichier(horaire_vers_ics(seances, hid), f"{nom}.ics", "text/calendar")

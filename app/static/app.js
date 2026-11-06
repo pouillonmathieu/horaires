@@ -96,15 +96,16 @@ function montrerVue(v) {
 async function chargerJeux() {
   etat.jeux = await api("/api/jeux");
   const tb = vider($("#table-jeux tbody"));
-  if (!etat.jeux.length) tb.append(h("tr", {}, h("td", { colspan: 8, classe: "discret" }, "Aucune donnée importée. Commencez par le modèle Excel ou l'exemple.")));
+  if (!etat.jeux.length) tb.append(h("tr", {}, h("td", { colspan: 9, classe: "discret" }, "Aucune donnée importée. Commencez par le modèle Excel ou l'exemple.")));
   for (const j of etat.jeux) {
     tb.append(h("tr", {},
       h("td", {}, j.nom), h("td", {}, fmtDateHeure(j.cree_le)),
-      h("td", {}, j.nb_groupes), h("td", {}, j.nb_modules), h("td", {}, j.nb_enseignants), h("td", {}, j.nb_locaux),
+      h("td", {}, j.nb_groupes), h("td", {}, j.nb_modules), h("td", {}, j.nb_cours ?? "–"), h("td", {}, j.nb_enseignants), h("td", {}, j.nb_locaux),
       h("td", {}, j.nb_erreurs ? h("span", { classe: "pastille rouge" }, `${j.nb_erreurs} erreur(s)`) : h("span", { classe: "pastille vert" }, "OK")),
       h("td", { classe: "actions" },
         h("button", { onclick: () => ouvrirJeu(j.id) }, "Ouvrir"),
         h("a", { classe: "bouton", href: `/api/jeux/${j.id}/donnees.xlsx` }, "Excel"),
+        h("a", { classe: "bouton", href: `/api/jeux/${j.id}/donnees-csv.zip` }, "CSV"),
         etat.moi.role !== "lecteur" ? h("button", { classe: "danger", onclick: () => supprimerJeu(j) }, "Supprimer") : null),
     ));
   }
@@ -143,16 +144,18 @@ function afficherRetourImport(res, err) {
     if (err.details?.length) zone.append(h("ul", { classe: "diagnostic" }, err.details.map((d) => h("li", { classe: "erreur" }, d))));
     return;
   }
-  zone.append(h("p", { classe: "succes" }, `« ${res.nom} » importé : ${res.nb_groupes} groupes, ${res.nb_modules} modules.`));
+  zone.append(h("p", { classe: "succes" }, `« ${res.nom} » importé : ${res.nb_groupes} groupes, ${res.nb_modules} modules, ${res.nb_cours} cours.`));
 }
 
 $("#form-import").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const bouton = e.target.querySelector("button[type=submit]");
+  bouton.disabled = true;
   try {
     const res = await api("/api/jeux", { method: "POST", body: fd });
     afficherRetourImport(res); e.target.reset(); await chargerJeux(); ouvrirJeu(res.id);
-  } catch (err) { afficherRetourImport(null, err); }
+  } catch (err) { afficherRetourImport(null, err); } finally { bouton.disabled = false; }
 });
 
 $("#btn-exemple").addEventListener("click", async () => {
@@ -217,18 +220,24 @@ async function chargerHoraire(id) {
 }
 
 function afficherSynthese(lignes) {
+  etat.synthese = lignes;
   const tb = vider($("#table-synthese tbody"));
+  const seulementManques = $("#filtre-manques").checked;
   for (const l of lignes) {
+    if (seulementManques && !l.periodes_manquantes) continue;
     const pct = Math.round((100 * l.periodes_planifiees) / l.periodes_requises);
     const barre = h("div", { classe: "barre" }, h("span"));
     barre.firstChild.style.width = Math.min(100, pct) + "%";
     if (l.periodes_manquantes) barre.classList.add("incomplet");
     tb.append(h("tr", { classe: l.periodes_manquantes ? "incomplet" : "" },
-      h("td", {}, l.groupe), h("td", {}, `${l.module} – ${l.module_nom}`), h("td", {}, l.enseignant || "–"),
+      h("td", {}, l.groupe), h("td", { title: l.module_nom }, l.module), h("td", {}, `${l.cours} – ${l.cours_nom}`),
+      h("td", { title: l.enseignant_noms || "" }, l.enseignant || "–"),
       h("td", {}, `${l.periodes_planifiees} / ${l.periodes_requises}`), h("td", {}, barre),
-      h("td", {}, l.nb_seances), h("td", {}, fmtDate(l.premiere_seance)), h("td", {}, fmtDate(l.derniere_seance))));
+      h("td", {}, (l.creneaux_hebdo || []).join(", ")), h("td", {}, (l.locaux || []).join(", ")),
+      h("td", {}, fmtDate(l.premiere_seance)), h("td", {}, fmtDate(l.derniere_seance))));
   }
 }
+$("#filtre-manques").addEventListener("change", () => afficherSynthese(etat.synthese || []));
 
 function remplirEntites() {
   const par = $("#vue-par").value;
@@ -252,7 +261,7 @@ const dans = (p, j) => p.date_debut <= j && j <= p.date_fin;
 function afficherGrille() {
   const par = $("#vue-par").value, id = $("#vue-entite").value;
   const d = etat.donneesHoraire, cal = d.calendrier;
-  const seances = etat.horaire.contenu.seances.filter((s) => s[par] === id);
+  const seances = etat.horaire.contenu.seances.filter((s) => (par === "enseignant" ? s.enseignants.includes(id) : s[par] === id));
   if (!etat.semaine) etat.semaine = lundi(seances[0]?.date || cal.date_debut);
   const exportIcs = $("#export-ics");
   exportIcs.href = `/api/horaires/${etat.horaire.id}/horaire.ics?type=${par}&id=${encodeURIComponent(id)}`;
@@ -278,10 +287,11 @@ function afficherGrille() {
       else if (ferme) cas.append(h("div", { classe: "marque ferme" }, ferme.motif || "Fermé"));
       else if (stage) cas.append(h("div", { classe: "marque stage" }, stage.motif || "Stage"));
       for (const s of seances.filter((s) => s.date === date && s.creneau === c.id)) {
-        const carte = h("div", { classe: "seance", title: `${s.module_nom}\n${s.groupe_nom}\n${s.local} · ${s.enseignant}` },
-          h("strong", {}, s.module), h("span", {}, s.module_nom),
+        const carte = h("div", { classe: "seance", title: `${s.module} – ${s.module_nom}\n${s.cours_nom}\n${s.groupe_nom}\n${s.local} · ${s.enseignant}` },
+          h("strong", {}, s.cours), h("span", {}, s.cours_nom || s.module_nom),
           h("small", {}, [par !== "groupe" ? s.groupe : null, par !== "local" ? s.local : null, par !== "enseignant" ? s.enseignant : null].filter(Boolean).join(" · ")));
         carte.style.setProperty("--teinte", couleur(s.module));
+        if (s.local === "À attribuer") carte.classList.add("sans-local");
         cas.append(carte);
       }
       grille.append(cas);

@@ -91,3 +91,6 @@ dialog::backdrop { background: rgba(20, 30, 45, .45); }
   main { padding: .6rem; }
   .tableau { display: block; overflow-x: auto; }
 }
+.case-a-cocher { flex-direction: row; align-items: center; gap: .4rem; }
+.seance.sans-local { outline: 2px dashed var(--rouge); }
+code { background: var(--accent-clair); padding: 0 .25rem; border-radius: 3px; font-size: .85em; }

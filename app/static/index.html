@@ -37,12 +37,16 @@
       <section id="vue-donnees" class="vue">
         <div class="carte" data-role="planificateur">
           <h2>Importer des données</h2>
-          <p class="discret">Classeur Excel (un onglet par type : créneaux, fermetures, locaux, enseignants, modules, groupes, stages…) ou fichier JSON.</p>
+          <p class="discret">Classeur Excel (un onglet par type), fichiers CSV (sélectionnez-les tous, ou un .zip) ou JSON.
+            Les CSV portent le nom de la table : <code>parametres.csv</code>, <code>creneaux.csv</code>, <code>locaux.csv</code>,
+            <code>enseignants.csv</code>, <code>modules.csv</code>, <code>cours.csv</code>, <code>attributions.csv</code>,
+            <code>groupes.csv</code>… Séparateur « ; » ou « , », encodage UTF-8 ou Windows.</p>
           <form id="form-import" class="ligne">
-            <input type="file" name="fichier" accept=".xlsx,.json" required>
+            <input type="file" name="fichier" accept=".xlsx,.json,.csv,.zip" multiple required>
             <input name="nom" placeholder="Nom (facultatif)" maxlength="200">
             <button type="submit" class="primaire">Importer</button>
-            <a href="/api/modele.xlsx" class="bouton">Télécharger le modèle Excel</a>
+            <a href="/api/modele.xlsx" class="bouton">Modèle Excel</a>
+            <a href="/api/modele-csv.zip" class="bouton">Modèle CSV</a>
             <button type="button" id="btn-exemple">Charger l'exemple</button>
           </form>
           <div id="retour-import"></div>
@@ -51,7 +55,7 @@
         <div class="carte">
           <h2>Jeux de données</h2>
           <table class="tableau" id="table-jeux">
-            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
+            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Cours</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -65,8 +69,9 @@
             <form id="form-planif" class="ligne">
               <label>Durée maximale de calcul
                 <select name="duree_max_s">
-                  <option value="15">15 s</option><option value="30" selected>30 s</option>
-                  <option value="60">1 min</option><option value="180">3 min</option><option value="600">10 min</option>
+                  <option value="60">1 min</option><option value="120" selected>2 min</option>
+                  <option value="300">5 min</option><option value="600">10 min</option>
+                  <option value="1200">20 min</option><option value="1800">30 min</option>
                 </select>
               </label>
               <label>Regroupement des modules
@@ -76,6 +81,7 @@
               </label>
               <button type="submit" class="primaire">Planifier</button>
             </form>
+            <p class="discret">Plus la durée est longue, meilleur est le résultat. Pour un grand établissement, comptez 10 à 30 minutes.</p>
           </div>
         </div>
       </section>
@@ -108,9 +114,10 @@
         </div>
 
         <div class="carte" id="bloc-synthese" hidden>
-          <h2>Synthèse par module</h2>
+          <div class="ligne"><h2>Synthèse par cours</h2><span class="espace"></span>
+            <label class="case-a-cocher"><input type="checkbox" id="filtre-manques"> Seulement les cours incomplets</label></div>
           <table class="tableau" id="table-synthese">
-            <thead><tr><th>Groupe</th><th>Module</th><th>Enseignant</th><th>Périodes</th><th>Avancement</th><th>Séances</th><th>Début</th><th>Fin</th></tr></thead>
+            <thead><tr><th>Groupe</th><th>Module</th><th>Cours</th><th>Enseignant(s)</th><th>Périodes</th><th>Avancement</th><th>Créneaux hebdo</th><th>Local</th><th>Début</th><th>Fin</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>

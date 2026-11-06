@@ -8,6 +8,10 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 
 | Contrainte | Où la saisir |
 |---|---|
+| Modules composés de plusieurs cours | `Modules`, `Cours` |
+| Cours **réparti** entre enseignants (ex. 40 p. + 20 p.) | plusieurs lignes `Attributions` pour un cours |
+| **Co-enseignement** (plusieurs enseignants présents ensemble) | plusieurs enseignants sur une ligne `Attributions` |
+| Enseignant différent selon le groupe | colonne `Attributions.groupes` |
 | Modules préalables (prérequis) : un module se termine avant le début du suivant | `Modules.prerequis` |
 | Jours de cours et créneaux (matin / après-midi / soir…) par groupe | `Parametres`, `Creneaux`, `Groupes.jours_cours`, `Groupes.creneaux` |
 | Jours de stage (pas de cours) | `Stages` |
@@ -15,13 +19,29 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Taille du groupe et capacité des locaux | `Groupes.effectif`, `Locaux.capacite` |
 | Disponibilités et indisponibilités des enseignants | `Enseignants.disponibilites`, `Indisponibilites` |
 | Indisponibilités des locaux (travaux, examens…) | `Indisponibilites` (type `local`) |
-| Équipement fixe d'un local (PC, lit médicalisé…) | `Locaux.equipements`, `Modules.equipements` |
-| Matériel mobile en quantité limitée | `Ressources`, `Modules.ressources` |
-| Enseignants habilités par module, avec choix automatique | `Modules.enseignants` |
-| Plafond hebdomadaire d'un enseignant, rythme maximal d'un module | `max_periodes_semaine`, `max_seances_semaine` |
+| Équipement fixe d'un local (PC, lit médicalisé…) | `Locaux.equipements`, `Cours.equipements` |
+| Matériel mobile en quantité limitée | `Ressources`, `Cours.ressources` |
+| Local attitré d'un groupe | `Groupes.local_prefere` |
+| Plafond hebdomadaire d'un enseignant, rythme maximal d'un cours | `max_periodes_semaine`, `max_seances_semaine` |
 
-Pour démarrer, téléchargez le **modèle Excel** depuis l'application (ou ouvrez
-`exemples/modele_horaires.xlsx`). Il contient un exemple complet et une ligne d'aide par onglet.
+## Import des données
+
+Trois formats, mêmes tables :
+
+- **CSV**, pour les exports du logiciel de gestion : un fichier par table, nommé comme la table
+  (`parametres.csv`, `creneaux.csv`, `fermetures.csv`, `locaux.csv`, `ressources.csv`, `enseignants.csv`,
+  `indisponibilites.csv`, `modules.csv`, `cours.csv`, `attributions.csv`, `groupes.csv`, `stages.csv`).
+  Envoyez-les tous d'un coup ou dans un `.zip`. L'import tolère :
+  - les séparateurs `;`, `,` et tabulation ;
+  - les encodages UTF-8 (avec ou sans BOM) et Windows-1252 ;
+  - les dates `JJ/MM/AAAA` ou `AAAA-MM-JJ` ;
+  - les en-têtes avec accents ou majuscules ;
+  - les identifiants avec espaces ou « / » (ex. `UE 7/12`).
+- **Excel** : un onglet par table (`exemples/modele_horaires.xlsx`).
+- **JSON** : la structure interne complète.
+
+Les modèles Excel et CSV sont téléchargeables depuis l'application et contiennent un exemple complet.
+Les données importées peuvent aussi être réexportées en Excel ou en CSV, corrigées, puis réimportées.
 
 ## Le « moteur IA »
 
@@ -30,12 +50,29 @@ technique d'IA adaptée aux horaires : elle garantit que **toutes les contrainte
 respectées**, ce qu'un modèle de langage (type ChatGPT/Claude) ne sait pas garantir. Elle tourne
 aussi entièrement sur votre serveur : aucune donnée ne sort.
 
-- Le moteur choisit, pour chaque groupe et module, l'enseignant, les dates et créneaux, et le local.
-- Objectif : 1) tout planifier, 2) terminer les modules au plus tôt, 3) les regrouper ou les étaler (réglable).
-- S'il manque de la place, le moteur ne s'arrête pas sur « pas de solution ». Il produit le meilleur
-  horaire possible et signale, module par module, les périodes non placées, la cause et quoi changer.
-- Un contrôle des données avant calcul détecte les incohérences : cycles de prérequis, aucun local
-  assez grand, enseignant surchargé, volume horaire impossible à caser, etc.
+**Modèle hebdomadaire récurrent.** Comme en pratique en formation pour adultes, chaque cours a lieu à
+jour et heure fixes (« le mardi soir, en A101, du 12/01 au 23/03 »), sur un ou plusieurs créneaux par
+semaine. Les séances réelles sont ensuite calculées date par date : jours fériés, vacances, stages et
+absences ponctuelles sont sautés, et le cours se prolonge d'autant. Cette formulation reste compacte
+même pour un grand établissement.
+
+**Étapes de calcul**
+
+1. **Contrôle des données** : cycles de prérequis, aucun local assez grand, enseignant surchargé,
+   volume horaire impossible à caser…
+2. **Heuristique constructive** : un premier horaire complet en quelques secondes.
+3. **Optimisation du volume** (CP-SAT) : placer le maximum de périodes.
+4. **Optimisation de la qualité**, à volume égal : finir tôt, resserrer ou étaler les cours (réglable).
+5. **Attribution des locaux**, créneau par créneau : même salle sur toute la durée d'un cours, local
+   attitré en priorité, salles spécialisées réservées aux cours qui en ont besoin. La capacité en salles
+   est déjà garantie à l'étape 3.
+
+S'il manque de la place, le moteur ne s'arrête pas sur « pas de solution ». Il produit le meilleur
+horaire possible et signale, cours par cours, les périodes non placées, la cause et quoi changer.
+
+**Temps de calcul.** Plus on laisse de temps, meilleur est le résultat. L'exemple fourni est résolu de
+façon optimale en quelques secondes. Pour un grand établissement, prévoir 10 à 30 minutes (voir
+« Performances » plus bas). `scripts/generer_instance.py` génère un établissement fictif de la taille voulue pour tester.
 
 Un assistant conversationnel (LLM) pourra être ajouté par-dessus, par exemple pour saisir une
 contrainte en langage naturel (« Mme Lambert n'est plus disponible le vendredi ») ou commenter un
@@ -91,20 +128,27 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 18 tests couvrent le moteur et la sécurité. Côté moteur : absence de double réservation,
-respect de chaque contrainte, prérequis, matériel et plafonds, signalement des manques, aller-retour
-Excel. Côté sécurité : accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos,
-détection de falsification, parcours complet par l'API.
+Les 22 tests couvrent le moteur, les imports et la sécurité :
+- **moteur** : aucune double réservation (groupe, local, enseignant), respect de chaque contrainte,
+  prérequis, co-enseignement, répartition entre enseignants, attributions par groupe, matériel et
+  plafonds, salle fixe par créneau, signalement des manques, cohérence complète sur un établissement généré ;
+- **imports** : allers-retours Excel et CSV, CSV Windows-1252 avec dates belges, identifiants du logiciel de gestion ;
+- **sécurité** : accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos, détection de
+  falsification, parcours complet par l'API.
 
 ## Architecture
 
 ```
 app/
   modeles.py            modèle de données + validation stricte
-  solveur/moteur.py     modèle d'optimisation CP-SAT
+  solveur/moteur.py     modèle d'optimisation CP-SAT (hebdomadaire récurrent) + attribution des locaux
+  solveur/heuristique.py premier horaire rapide (point de départ du solveur)
   solveur/diagnostic.py explications lisibles (avant / après calcul)
-  fichiers.py           import/export Excel & JSON, export Excel/iCalendar des horaires
-  connecteurs/          sources de données : fichier aujourd'hui, logiciel de gestion demain
+  fichiers.py           import/export Excel, CSV & JSON, export Excel/iCalendar des horaires
+  connecteurs/          sources de données : fichiers (Excel/CSV/JSON) aujourd'hui, logiciel de gestion demain
+scripts/
+  creer_admin.py        création / réinitialisation d'un administrateur
+  generer_instance.py   établissement fictif de taille paramétrable (tests de charge)
   chiffrement.py        AES-256-GCM
   stockage.py           SQLite chiffré + journal d'audit chaîné
   securite.py           authentification, sessions, rôles, CSRF, anti-force brute
