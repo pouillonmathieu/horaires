@@ -136,6 +136,24 @@ Les 22 tests couvrent le moteur, les imports et la sécurité :
 - **sécurité** : accès anonyme refusé, CSRF, rôles, force brute, chiffrement au repos, détection de
   falsification, parcours complet par l'API.
 
+## Performances
+
+Mesures sur un établissement fictif à la taille maximale visée, généré par `scripts/generer_instance.py`
+(machine de test à 4 cœurs) :
+- **taille** : 100 groupes (≈ 2 000 apprenants), 200 enseignants, 458 modules, 920 cours, 35 100 périodes, 71 locaux ;
+- **calendrier** : une année scolaire avec congés et stages.
+
+| Durée de calcul | Périodes placées | Séances | Séances sans local |
+|---|---|---|---|
+| Heuristique seule (< 1 s) | 93,1 % | | |
+| 10 min | 95,9 % | 8 535 | 0 |
+| 30 min | **97,6 %** | 8 687 | 0 |
+
+Les périodes non placées sont listées cours par cours, avec leur cause. Une partie est inévitable avec
+ces données : par exemple, un enseignant dont le plafond hebdomadaire ne suffit pas pour ses attributions.
+Avec des données réelles, généralement moins tendues que ce générateur volontairement chargé, le taux
+devrait être plus élevé.
+
 ## Architecture
 
 ```
