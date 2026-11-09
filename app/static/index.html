@@ -144,7 +144,8 @@
           <div class="ligne"><h2>Contenu du jeu de données</h2><span class="espace"></span>
             <input type="search" id="filtre-donnees" placeholder="Rechercher…" aria-label="Rechercher"></div>
           <div class="sous-onglets" id="sous-onglets">
-            <button data-entite="cours" class="actif">Cours</button>
+            <button data-entite="ue" class="actif">UE</button>
+            <button data-entite="cours">Cours</button>
             <button data-entite="enseignants">Enseignants</button>
             <button data-entite="groupes">Groupes</button>
             <button data-entite="locaux">Locaux</button>
@@ -179,7 +180,7 @@
         <div class="carte">
           <h2>Historique des jeux de données</h2>
           <div class="defile"><table class="tableau" id="table-jeux">
-            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>Modules</th><th>Cours</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
+            <thead><tr><th>Nom</th><th>Importé le</th><th>Groupes</th><th>UE</th><th>Cours</th><th>Enseignants</th><th>Locaux</th><th>Contrôle</th><th></th></tr></thead>
             <tbody></tbody>
           </table></div>
         </div>
@@ -228,7 +229,7 @@
           <div class="ligne"><h2>Synthèse par cours</h2><span class="espace"></span>
             <label class="case-a-cocher"><input type="checkbox" id="filtre-manques"> Seulement les cours incomplets</label></div>
           <div class="defile"><table class="tableau cliquable" id="table-synthese">
-            <thead><tr><th>Groupe</th><th>Module</th><th>Cours</th><th>Enseignant(s)</th><th>Mode</th><th>Périodes</th><th>Avancement</th><th>Créneaux hebdo</th><th>Local</th><th>Début</th><th>Fin</th></tr></thead>
+            <thead><tr><th>Groupe</th><th>UE</th><th>Cours</th><th>Enseignant(s)</th><th>Mode</th><th>Périodes</th><th>Avancement</th><th>Créneaux hebdo</th><th>Local</th><th>Début</th><th>Fin</th></tr></thead>
             <tbody></tbody>
           </table></div>
         </div>

@@ -276,11 +276,11 @@ class Attribution(Strict):
     """
     enseignants: list[Id] = Field(min_length=1, max_length=10)
     periodes: int = Field(ge=1, le=5000)
-    groupes: list[Id] = Field(default_factory=list, description="vide = tous les groupes qui suivent le module")
+    groupes: list[Id] = Field(default_factory=list, description="vide = tous les groupes qui suivent l'UE")
 
 
 class Cours(Strict):
-    """Cours (activité d'enseignement) d'un module."""
+    """Cours (activité d'enseignement) d'une UE. Dates, implantation et rythme vides = ceux de l'UE."""
     id: Id
     nom: Texte = ""
     periodes: int = Field(ge=1, le=5000)
@@ -289,7 +289,11 @@ class Cours(Strict):
     max_seances_semaine: int | None = Field(default=None, ge=1, le=50)
     rythme: Rythme | None = Field(default=None, description="vide = rythme par défaut du calendrier")
     bloc: str | None = Field(default=None, description="taille des séances ; vide = valeur par défaut de l'établissement")
-    implantation: Id | None = Field(default=None, description="vide = implantation du groupe")
+    implantation: Id | None = Field(default=None, description="vide = implantation de l'UE, sinon du groupe")
+    date_debut: date | None = Field(default=None, description="vide = date de début de l'UE")
+    date_fin: date | None = Field(default=None, description="vide = date de fin de l'UE")
+    periodes_semaine: int | None = Field(default=None, ge=1, le=60,
+                                         description="rythme : périodes par semaine au maximum ; vide = celui de l'UE")
     locaux: list[Id] = Field(default_factory=list, description="locaux autorisés ; vide = tout local compatible")
     periodes_distanciel: int = Field(default=0, ge=0, le=5000, description="périodes données à distance (sans local)")
     attributions: list[Attribution] = Field(min_length=1, max_length=50)
@@ -305,10 +309,18 @@ class Cours(Strict):
 
 
 class Module(Strict):
-    """Module / unité d'enseignement : regroupe un ou plusieurs cours."""
+    """UE (unité d'enseignement) : regroupe un ou plusieurs cours.
+
+    Dates, implantation et rythme s'appliquent à tous ses cours, sauf si un cours précise les siens.
+    """
     id: Id
     nom: Texte = ""
-    prerequis: list[Id] = Field(default_factory=list, description="modules à terminer avant de commencer celui-ci")
+    prerequis: list[Id] = Field(default_factory=list, description="UE à terminer avant de commencer celle-ci")
+    date_debut: date | None = Field(default=None, description="pas de cours de l'UE avant cette date")
+    date_fin: date | None = Field(default=None, description="pas de cours de l'UE après cette date")
+    implantation: Id | None = Field(default=None, description="vide = implantation du groupe")
+    periodes_semaine: int | None = Field(default=None, ge=1, le=60,
+                                         description="rythme de chaque cours : périodes par semaine au maximum")
     cours: list[Cours] = Field(min_length=1, max_length=50)
 
     @property
@@ -413,10 +425,16 @@ class JeuDeDonnees(Strict):
                 suivi_par.setdefault(m, []).append(g.id)
 
         for m in self.modules:
-            erreurs += [f"module {m.id} : prérequis inconnu « {p} »" for p in m.prerequis if p not in modules]
+            erreurs += [f"UE {m.id} : prérequis inconnu « {p} »" for p in m.prerequis if p not in modules]
             if m.id in m.prerequis:
-                erreurs.append(f"module {m.id} : ne peut pas être son propre prérequis")
+                erreurs.append(f"UE {m.id} : ne peut pas être son propre prérequis")
+            implantation_connue(f"UE {m.id}", m.implantation)
+            if m.date_debut and m.date_fin and m.date_fin < m.date_debut:
+                erreurs.append(f"UE {m.id} : la date de fin précède la date de début")
             for c in m.cours:
+                debut, fin = c.date_debut or m.date_debut, c.date_fin or m.date_fin
+                if debut and fin and fin < debut:
+                    erreurs.append(f"cours {c.id} : la date de fin précède la date de début")
                 erreurs += [f"cours {c.id} : ressource inconnue « {r} »" for r in c.ressources if r not in ressources]
                 erreurs += [f"cours {c.id} : local inconnu « {l} »" for l in c.locaux if l not in locaux]
                 implantation_connue(f"cours {c.id}", c.implantation)
@@ -436,12 +454,12 @@ class JeuDeDonnees(Strict):
                         erreurs.append(f"cours {c.id} / groupe {gid} : attributions = {total} périodes "
                                        f"pour {c.periodes} périodes de cours")
         for g in self.groupes:
-            erreurs += [f"groupe {g.id} : module inconnu « {m} »" for m in g.modules if m not in modules]
+            erreurs += [f"groupe {g.id} : UE inconnue « {m} »" for m in g.modules if m not in modules]
             erreurs += [f"groupe {g.id} : créneau inconnu « {c} »" for c in g.creneaux if c not in creneaux]
             if g.local_prefere and g.local_prefere not in locaux:
                 erreurs.append(f"groupe {g.id} : local préféré inconnu « {g.local_prefere} »")
             if len(set(g.modules)) != len(g.modules):
-                erreurs.append(f"groupe {g.id} : module listé plusieurs fois")
+                erreurs.append(f"groupe {g.id} : UE listée plusieurs fois")
 
         if erreurs:
             raise ValueError("\n".join(erreurs[:50]) + (f"\n… et {len(erreurs) - 50} autres erreurs" if len(erreurs) > 50 else ""))

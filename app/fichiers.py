@@ -31,16 +31,16 @@ ONGLETS: dict[str, list[str]] = {
     "Ressources": ["id", "nom", "quantite"],
     "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine", "implantations", "date_debut", "date_fin"],
     "Indisponibilites": ["type", "id", "date_debut", "date_fin", "creneaux", "motif"],
-    "Modules": ["id", "nom", "prerequis"],
-    "Cours": ["id", "module", "nom", "periodes", "equipements", "ressources", "max_seances_semaine", "rythme", "bloc",
-              "implantation", "locaux", "periodes_distanciel"],
+    "UE": ["id", "nom", "prerequis", "date_debut", "date_fin", "implantation", "periodes_semaine"],
+    "Cours": ["id", "ue", "nom", "periodes", "equipements", "ressources", "max_seances_semaine", "rythme", "bloc",
+              "implantation", "locaux", "periodes_distanciel", "date_debut", "date_fin", "periodes_semaine"],
     "Attributions": ["cours", "enseignants", "periodes", "groupes"],
-    "Groupes": ["id", "nom", "effectif", "modules", "implantation", "jours_cours", "creneaux", "date_debut", "date_fin",
+    "Groupes": ["id", "nom", "effectif", "ue", "implantation", "jours_cours", "creneaux", "date_debut", "date_fin",
                 "local_prefere"],
     "Stages": ["groupe", "date_debut", "date_fin", "jours", "motif"],
     # Formats « une ligne par lien » (facultatifs), plus proches d'un export de base de données :
-    "Parcours": ["groupe", "module"],
-    "Prerequis": ["module", "prerequis"],
+    "Parcours": ["groupe", "ue"],
+    "Prerequis": ["ue", "prerequis"],
 }
 
 AIDE = {
@@ -60,18 +60,21 @@ AIDE = {
     "Enseignants": "Disponibilités : jour:plage séparés par « ; » (ex. lun:soir;mer:*), vide = toujours. Implantations "
                    "où il enseigne (vide = selon le paramètre). date_debut / date_fin : engagement et fin de contrat.",
     "Indisponibilites": "type = enseignant ou local. Créneaux vides = journée entière.",
-    "Modules": "Un module (unité d'enseignement) regroupe des cours. Prérequis : modules à terminer avant, séparés par « ; ».",
-    "Cours": "Cours d'un module : périodes, besoins en local/matériel. Rythme : fixe ou souple. Bloc : taille des "
-             "séances (plage, 2…9, modulable ; vide = défaut). Implantation : si différente de celle du groupe. Locaux : "
-             "locaux imposés. periodes_distanciel : périodes données à distance (cours hybride, sans local).",
+    "UE": "Une UE (unité d'enseignement) regroupe des cours. Prérequis : UE à terminer avant, séparées par « ; ». "
+          "date_debut / date_fin, implantation et periodes_semaine (rythme : périodes par semaine au maximum) "
+          "s'appliquent à tous ses cours, sauf si le cours précise les siens. Tout est facultatif.",
+    "Cours": "Cours d'une UE : périodes, besoins en local/matériel. Rythme : fixe ou souple. Bloc : taille des "
+             "séances (plage, 2…9, modulable ; vide = défaut). Implantation, date_debut, date_fin, periodes_semaine : "
+             "vides = ceux de l'UE. Locaux : locaux imposés. periodes_distanciel : périodes données à distance "
+             "(cours hybride, sans local).",
     "Attributions": "Qui donne le cours. Plusieurs lignes pour un cours = cours réparti (ex. 40 p. + 20 p.). "
                     "Plusieurs enseignants sur une ligne = co-enseignement (présents ensemble). "
                     "« groupes » : attribution propre à certains groupes (vide = tous).",
-    "Groupes": "Modules du parcours séparés par « ; ». Implantation de la formation. Jours/plages vides = ceux du "
+    "Groupes": "UE du parcours séparées par « ; ». Implantation de la formation. Jours/plages vides = ceux du "
                "calendrier. Local préféré facultatif.",
     "Stages": "Périodes de stage d'un groupe (pas de cours). Jours vides = tous les jours de la période.",
-    "Parcours": "Facultatif : une ligne par module suivi par un groupe (alternative à la colonne Groupes.modules).",
-    "Prerequis": "Facultatif : une ligne par prérequis (alternative à la colonne Modules.prerequis).",
+    "Parcours": "Facultatif : une ligne par UE suivie par un groupe (alternative à la colonne Groupes.ue).",
+    "Prerequis": "Facultatif : une ligne par prérequis (alternative à la colonne UE.prerequis).",
 }
 
 MAX_FICHIERS_ZIP = 50
@@ -142,7 +145,14 @@ def _cle(nom: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", nom).strip("_")
 
 
-ONGLETS_NORMALISES = {_cle(o): o for o in ONGLETS}
+ONGLETS_NORMALISES = {_cle(o): o for o in ONGLETS} | {
+    "modules": "UE", "module": "UE", "unites_d_enseignement": "UE", "unites_enseignement": "UE"}
+ALIAS_COLONNES = {"module": "ue", "modules": "ue", "unite_d_enseignement": "ue", "unites_d_enseignement": "ue"}
+
+
+def _colonne(nom: str) -> str:
+    c = _cle(nom)
+    return ALIAS_COLONNES.get(c, c)
 
 
 def _verifier_zip(contenu: bytes, quoi: str = "classeur Excel (.xlsx)") -> zipfile.ZipFile:
@@ -156,12 +166,12 @@ def _verifier_zip(contenu: bytes, quoi: str = "classeur Excel (.xlsx)") -> zipfi
 
 
 def _lignes_excel(wb, onglet: str) -> list[dict]:
-    nom = next((n for n in wb.sheetnames if _cle(n) == _cle(onglet)), None)
+    nom = next((n for n in wb.sheetnames if ONGLETS_NORMALISES.get(_cle(n)) == onglet), None)
     if nom is None:
         return []
     rows = wb[nom].iter_rows(values_only=True)
     try:
-        entetes = [_cle(str(h)) if h is not None else "" for h in next(rows)]
+        entetes = [_colonne(str(h)) if h is not None else "" for h in next(rows)]
     except StopIteration:
         return []
     out = []
@@ -193,7 +203,7 @@ def _lignes_csv(contenu: bytes, nom: str) -> list[dict]:
     sep = max([";", ",", "\t"], key=premiere.count)
     lecteur = csv.reader(io.StringIO(texte), delimiter=sep)
     try:
-        entetes = [_cle(h) for h in next(lecteur)]
+        entetes = [_colonne(h) for h in next(lecteur)]
     except StopIteration:
         return []
     out = []
@@ -285,7 +295,7 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
         cours_par_module: dict[str, list] = {}
         for r in lire("Cours"):
             cid = _texte(obligatoire(r, "id", "Cours"))
-            cours_par_module.setdefault(_texte(obligatoire(r, "module", "Cours")), []).append({
+            cours_par_module.setdefault(_texte(obligatoire(r, "ue", "Cours")), []).append({
                 "id": cid, "nom": _texte(r.get("nom")), "periodes": _entier(obligatoire(r, "periodes", "Cours")),
                 "equipements": _liste(r.get("equipements")), "ressources": _liste(r.get("ressources")),
                 "max_seances_semaine": _entier(r.get("max_seances_semaine")),
@@ -294,6 +304,8 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 "implantation": _texte(r.get("implantation")) or None,
                 "locaux": _liste(r.get("locaux")),
                 "periodes_distanciel": _entier(r.get("periodes_distanciel")) or 0,
+                "date_debut": _date(r.get("date_debut")), "date_fin": _date(r.get("date_fin")),
+                "periodes_semaine": _entier(r.get("periodes_semaine")),
                 "attributions": attributions.pop(cid, []),
             })
         if attributions:
@@ -301,23 +313,26 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
 
         prerequis_lignes: dict[str, list[str]] = {}
         for r in lire("Prerequis"):
-            prerequis_lignes.setdefault(_texte(obligatoire(r, "module", "Prerequis")), []).append(
+            prerequis_lignes.setdefault(_texte(obligatoire(r, "ue", "Prerequis")), []).append(
                 _texte(obligatoire(r, "prerequis", "Prerequis")))
         modules = []
-        for r in lire("Modules"):
-            mid = _texte(obligatoire(r, "id", "Modules"))
+        for r in lire("UE"):
+            mid = _texte(obligatoire(r, "id", "UE"))
             pre = _liste(r.get("prerequis"))
             pre += [p for p in prerequis_lignes.pop(mid, []) if p not in pre]
             modules.append({"id": mid, "nom": _texte(r.get("nom")), "prerequis": pre,
+                            "date_debut": _date(r.get("date_debut")), "date_fin": _date(r.get("date_fin")),
+                            "implantation": _texte(r.get("implantation")) or None,
+                            "periodes_semaine": _entier(r.get("periodes_semaine")),
                             "cours": cours_par_module.pop(mid, [])})
         if prerequis_lignes:
-            raise ErreurImport(f"Prerequis : module(s) inconnu(s) : {', '.join(sorted(prerequis_lignes)[:10])}")
+            raise ErreurImport(f"Prerequis : UE inconnue(s) : {', '.join(sorted(prerequis_lignes)[:10])}")
         parcours: dict[str, list[str]] = {}
         for r in lire("Parcours"):
             parcours.setdefault(_texte(obligatoire(r, "groupe", "Parcours")), []).append(
-                _texte(obligatoire(r, "module", "Parcours")))
+                _texte(obligatoire(r, "ue", "Parcours")))
         if cours_par_module:
-            raise ErreurImport(f"Cours : module(s) inconnu(s) : {', '.join(sorted(cours_par_module)[:10])}")
+            raise ErreurImport(f"Cours : UE inconnue(s) : {', '.join(sorted(cours_par_module)[:10])}")
 
         etab = {"implantations": [
             {"id": _texte(obligatoire(r, "id", "Implantations")), "nom": _texte(r.get("nom")), "adresse": _texte(r.get("adresse"))}
@@ -382,7 +397,7 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 {"id": _texte(obligatoire(r, "id", "Groupes")), "nom": _texte(r.get("nom")),
                  "effectif": _entier(obligatoire(r, "effectif", "Groupes")),
                  "implantation": _texte(r.get("implantation")) or None,
-                 "modules": list(dict.fromkeys(_liste(r.get("modules")) + parcours.pop(_texte(r["id"]), []))),
+                 "modules": list(dict.fromkeys(_liste(r.get("ue")) + parcours.pop(_texte(r["id"]), []))),
                  "jours_cours": _liste(r.get("jours_cours")),
                  "creneaux": _liste(r.get("creneaux")), "date_debut": _date(r.get("date_debut")),
                  "date_fin": _date(r.get("date_fin")), "local_prefere": _texte(r.get("local_prefere")) or None,
@@ -448,7 +463,7 @@ def csv_vers_donnees(fichiers: list[tuple[str, bytes]], complement: JeuDeDonnees
     if inconnus:
         raise ErreurImport(f"fichier(s) CSV non reconnu(s) : {', '.join(inconnus[:10])}. "
                            f"Noms attendus : {', '.join(o.lower() + '.csv' for o in ONGLETS)}")
-    manquants = [o for o in ("Parametres", "Creneaux", "Locaux", "Enseignants", "Modules", "Cours", "Attributions", "Groupes")
+    manquants = [o for o in ("Parametres", "Creneaux", "Locaux", "Enseignants", "UE", "Cours", "Attributions", "Groupes")
                  if o not in tables]
     if manquants and complement is None:
         raise ErreurImport(f"fichier(s) CSV manquant(s) : {', '.join(m.lower() + '.csv' for m in manquants)}. "
@@ -465,9 +480,12 @@ def json_vers_donnees(contenu: bytes) -> JeuDeDonnees:
 _ENTETE = PatternFill("solid", fgColor="1F4E79")
 
 
+ENTETES_HORAIRE = {"module": "ue", "module_nom": "ue_nom"}
+
+
 def _feuille(wb: Workbook, nom: str, entetes: list[str], lignes: list[list], aide: str = ""):
     ws = wb.create_sheet(nom)
-    ws.append(entetes)
+    ws.append([ENTETES_HORAIRE.get(e, e) for e in entetes])
     for c in ws[1]:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = _ENTETE
@@ -514,9 +532,11 @@ def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
         "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine, _j(e.implantations), e.date_debut,
                          e.date_fin] for e in ds.enseignants],
         "Indisponibilites": indis,
-        "Modules": [[m.id, m.nom, _j(m.prerequis)] for m in ds.modules],
+        "UE": [[m.id, m.nom, _j(m.prerequis), m.date_debut, m.date_fin, m.implantation, m.periodes_semaine]
+               for m in ds.modules],
         "Cours": [[c.id, m.id, c.nom, c.periodes, _j(c.equipements), _j(c.ressources), c.max_seances_semaine, c.rythme,
-                   c.bloc, c.implantation, _j(c.locaux), c.periodes_distanciel or None]
+                   c.bloc, c.implantation, _j(c.locaux), c.periodes_distanciel or None, c.date_debut, c.date_fin,
+                   c.periodes_semaine]
                   for m in ds.modules for c in m.cours],
         "Attributions": [[c.id, _j(a.enseignants), a.periodes, _j(a.groupes)]
                          for m in ds.modules for c in m.cours for a in c.attributions],

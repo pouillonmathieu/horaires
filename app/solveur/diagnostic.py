@@ -13,6 +13,10 @@ from .moteur import (
 )
 
 
+def libelle_bloc(b: str) -> str:
+    return {"plage": "plage entière", "modulable": "taille modulable"}.get(b, f"{b} périodes")
+
+
 def _msg(niveau: str, sujet: str, message: str, suggestion: str = "") -> dict:
     return {"niveau": niveau, "sujet": sujet, "message": message, "suggestion": suggestion}
 
@@ -36,7 +40,17 @@ def cycles_prerequis(ds: JeuDeDonnees) -> list[list[str]]:
     return cycles
 
 
-def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True, avec_locaux: bool = True) -> int:
+def rythme_atteignable(hz: Horizon, u: Unite) -> int:
+    """Plus grand nombre de périodes ≤ rythme qu'on peut réunir en une semaine avec les tailles de séance du cours."""
+    tailles = {n for j in hz.jours for _, n in hz.positions(j, u.bloc)}
+    possible = [True] + [False] * u.rythme
+    for x in range(1, u.rythme + 1):
+        possible[x] = any(n <= x and possible[x - n] for n in tailles)
+    return max(x for x in range(u.rythme + 1) if possible[x])
+
+
+def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True, avec_locaux: bool = True,
+                   avec_rythme: bool = True) -> int:
     """Périodes que l'unité pourrait recevoir si elle était seule (sans concurrence)."""
     par_semaine = defaultdict(list)
     for j in hz.jours:
@@ -48,7 +62,12 @@ def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True, avec_lo
                     if ok:
                         par_semaine[t].append(ch.periodes)
     k = u.cours.max_seances_semaine
-    return sum(sum(sorted(v, reverse=True)[:k] if k else v) for v in par_semaine.values())
+    plafond = u.rythme if (avec_rythme and u.rythme) else None
+    total = 0
+    for v in par_semaine.values():
+        semaine = sum(sorted(v, reverse=True)[:k] if k else v)
+        total += min(semaine, plafond) if plafond is not None else semaine
+    return total
 
 
 def avant_planification(ds: JeuDeDonnees) -> list[dict]:
@@ -106,6 +125,19 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
         for r in u.cours.ressources:
             if next(x for x in ds.ressources if x.id == r).quantite == 0:
                 out.append(_msg("erreur", sujet, f"Le matériel « {r} » est en quantité nulle."))
+        if u.rythme and not u.distanciel and (u.groupe.id, u.cours.id, "rythme") not in deja:
+            deja.add((u.groupe.id, u.cours.id, "rythme"))
+            atteint = rythme_atteignable(hz, u)
+            if atteint == 0:
+                out.append(_msg("erreur", sujet, f"Rythme de {u.rythme} p./semaine plus petit qu'une séance "
+                                                 f"({libelle_bloc(u.bloc)}) : aucune séance n'est possible.",
+                                "Augmentez le rythme ou choisissez des séances plus courtes pour ce cours."))
+                continue
+            if atteint < u.rythme:
+                out.append(_msg("avertissement", sujet, f"Rythme de {u.rythme} p./semaine impossible à atteindre avec des "
+                                                        f"séances de {libelle_bloc(u.bloc)} : le cours avancera à "
+                                                        f"{atteint} p./semaine au plus.",
+                                "Choisissez un rythme multiple de la taille des séances, ou des séances modulables."))
         cap = capacite_unite(hz, u)
         if cap < u.periodes:
             sans_ens = capacite_unite(hz, u, avec_enseignants=False)
@@ -113,13 +145,19 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
                 cause = "disponibilités communes de l'enseignant" if len(u.enseignants) == 1 else \
                         "disponibilités communes des enseignants (co-enseignement)"
                 conseil = "Élargissez les disponibilités ou confiez une partie du cours à un autre enseignant."
+            elif u.rythme and capacite_unite(hz, u, avec_enseignants=False, avec_rythme=False) >= u.periodes:
+                cause = f"rythme de {u.rythme} p./semaine trop lent pour la période disponible"
+                conseil = ("Augmentez le rythme, élargissez les dates de l'UE ou du cours, "
+                           "ou ajoutez des créneaux au groupe.")
             elif capacite_unite(hz, u, avec_enseignants=False, avec_locaux=False) >= u.periodes:
                 cause = "jours et plages où les locaux compatibles sont disponibles"
                 conseil = ("Élargissez les disponibilités des locaux compatibles ("
                            + ", ".join(sorted(eligibles_unite(ds, u))) + ") ou autorisez un autre local.")
             else:
-                cause = "jours/créneaux et période du groupe"
-                conseil = "Élargissez les jours/créneaux du groupe, prolongez la période ou augmentez le rythme hebdomadaire autorisé."
+                cause = "jours/créneaux et période du groupe" + (", dates de l'UE ou du cours" if u.date_debut or u.date_fin else "")
+                conseil = ("Élargissez les jours/créneaux du groupe, prolongez la période"
+                           + (" ou les dates de l'UE/du cours" if u.date_debut or u.date_fin else "")
+                           + " ou augmentez le rythme hebdomadaire autorisé.")
             out.append(_msg("erreur", sujet, f"Seulement {cap} périodes possibles pour {u.periodes} requises "
                                              f"(facteur limitant : {cause}).", conseil))
 

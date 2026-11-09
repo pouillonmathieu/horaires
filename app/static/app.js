@@ -4,7 +4,7 @@
 const etat = {
   moi: null, jeux: [], jeu: null, horaire: null, blocs: [],
   vue: { par: "groupe", entite: null, echelle: "semaine", date: null },
-  etape: 1, modeParams: "parametres", entiteDonnees: "cours", sondage: null,
+  etape: 1, modeParams: "parametres", entiteDonnees: "ue", sondage: null,
 };
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -203,7 +203,7 @@ $("#form-import").addEventListener("submit", async (e) => {
   const zone = vider($("#retour-import"));
   try {
     const res = await api("/api/jeux", { method: "POST", body: fd });
-    zone.append(h("p", { classe: "succes" }, `« ${res.nom} » importé : ${res.nb_groupes} groupes, ${res.nb_modules} modules, ${res.nb_cours} cours.`));
+    zone.append(h("p", { classe: "succes" }, `« ${res.nom} » importé : ${res.nb_groupes} groupes, ${res.nb_modules} UE, ${res.nb_cours} cours.`));
     e.target.reset();
     await chargerJeux(); await choisirJeu(res.id);
   } catch (err) { afficherErreur(zone.appendChild(h("div", { classe: "erreur" })), err); } finally { bouton.disabled = false; }
@@ -462,6 +462,7 @@ $$("#sous-onglets button").forEach((b) => b.addEventListener("click", () => {
 $("#filtre-donnees").addEventListener("input", () => afficherEntites());
 
 function nomEns(d, id) { return d.enseignants.find((e) => e.id === id)?.nom || id; }
+const periodeTexte = (debut, fin) => (debut || fin ? `${debut ? fmtDate(debut) : "…"} → ${fin ? fmtDate(fin) : "…"}` : "toute l'année");
 function implNom(d, id) { return id ? d.etablissement.implantations.find((i) => i.id === id)?.nom || id : "–"; }
 function attributionsEnseignant(d, eid) {
   const out = [];
@@ -481,14 +482,24 @@ function afficherEntites() {
   const ligne = (type, id, cellules) => corps.append(h("tr", { tabindex: 0, onclick: () => ouvrirFiche(type, id),
     onkeydown: (e) => { if (e.key === "Enter") ouvrirFiche(type, id); } }, cellules.map((c) => h("td", {}, c))));
   const entetes = (cols) => tete.append(h("tr", {}, cols.map((c) => h("th", {}, c))));
-  if (etat.entiteDonnees === "cours") {
-    entetes(["Cours", "Module", "Périodes", "Enseignant(s)", "Bloc", "Mode", "Implantation"]);
+  if (etat.entiteDonnees === "ue") {
+    entetes(["UE", "Cours", "Périodes", "Prérequis", "Dates", "Implantation", "Rythme", "Groupes"]);
+    for (const m of d.modules) {
+      if (!garde(m.id, m.nom, m.cours.map((c) => c.nom).join(" "))) continue;
+      const groupes = d.groupes.filter((g) => g.modules.includes(m.id)).map((g) => g.id);
+      ligne("ue", m.id, [h("span", {}, h("b", {}, m.nom || m.id), h("div", { classe: "discret" }, m.id)), m.cours.length,
+        m.cours.reduce((s, c) => s + c.periodes, 0), m.prerequis.join(", ") || "–", periodeTexte(m.date_debut, m.date_fin),
+        m.implantation ? implNom(d, m.implantation) : "celle du groupe", m.periodes_semaine ? `${m.periodes_semaine} p./sem.` : "–",
+        groupes.join(", ") || "–"]);
+    }
+  } else if (etat.entiteDonnees === "cours") {
+    entetes(["Cours", "UE", "Périodes", "Enseignant(s)", "Bloc", "Mode", "Implantation"]);
     for (const m of d.modules) for (const c of m.cours) {
       const ens = c.attributions.map((a) => a.enseignants.map((e) => nomEns(d, e)).join(" + ")).join(" / ");
       if (!garde(c.id, c.nom, m.nom, ens)) continue;
       ligne("cours", c.id, [h("span", {}, h("b", {}, c.nom || c.id), h("div", { classe: "discret" }, c.id)), m.nom || m.id, c.periodes, ens,
         c.bloc ? libelleBloc(c.bloc) : "défaut", c.periodes_distanciel ? h("span", { classe: "pastille bleu" }, `hybride · ${c.periodes_distanciel} p. à distance`) : "présentiel",
-        c.implantation ? implNom(d, c.implantation) : "celle du groupe"]);
+        c.implantation ? implNom(d, c.implantation) : m.implantation ? `${implNom(d, m.implantation)} (UE)` : "celle du groupe"]);
     }
   } else if (etat.entiteDonnees === "enseignants") {
     entetes(["Enseignant", "Code", "Périodes attribuées", "Max / semaine", "Implantations", "Contrat"]);
@@ -500,7 +511,7 @@ function afficherEntites() {
         e.date_debut || e.date_fin ? `${e.date_debut ? fmtDate(e.date_debut) : "…"} → ${e.date_fin ? fmtDate(e.date_fin) : "…"}` : "toute l'année"]);
     }
   } else if (etat.entiteDonnees === "groupes") {
-    entetes(["Groupe", "Code", "Effectif", "Implantation", "Jours", "Plages", "Modules"]);
+    entetes(["Groupe", "Code", "Effectif", "Implantation", "Jours", "Plages", "UE"]);
     for (const g of d.groupes) {
       if (!garde(g.id, g.nom)) continue;
       ligne("groupe", g.id, [h("b", {}, g.nom || g.id), g.id, g.effectif, implNom(d, g.implantation),
@@ -540,22 +551,66 @@ function ouvrirFiche(type, id) {
   const form = vider($("#fiche-form"));
   const lecture = !peut("planificateur");
   let appliquer = null;
-  $("#fiche-type").textContent = { cours: "Cours", enseignant: "Enseignant", groupe: "Groupe", local: "Local" }[type];
+  $("#fiche-type").textContent = { ue: "UE", cours: "Cours", enseignant: "Enseignant", groupe: "Groupe", local: "Local" }[type];
 
-  if (type === "cours") {
+  if (type === "ue") {
+    const m = d.modules.find((x) => x.id === id);
+    if (!m) return;
+    $("#fiche-titre").textContent = m.nom || m.id;
+    const impl = d.etablissement.implantations;
+    const groupes = d.groupes.filter((g) => g.modules.includes(m.id));
+    const propres = (c) => [
+      c.date_debut || c.date_fin ? `dates : ${periodeTexte(c.date_debut, c.date_fin)}` : null,
+      c.implantation ? `implantation : ${implNom(d, c.implantation)}` : null,
+      c.periodes_semaine ? `rythme : ${c.periodes_semaine} p./sem.` : null].filter(Boolean).join(" · ") || "ceux de l'UE";
+    ajouter(form,
+      h("p", { classe: "discret" }, `Code ${m.id} · ${m.cours.length} cours · ${m.cours.reduce((s, c) => s + c.periodes, 0)} périodes`),
+      h("p", { classe: "aide" }, "Ces réglages s'appliquent à tous les cours de l'UE, sauf si un cours précise les siens dans sa fiche."),
+      h("div", { classe: "grille-champs" },
+        champ("Nom", entree("f-nom", m.nom)),
+        champ("Rythme (périodes par semaine)", entree("f-rythme-sem", m.periodes_semaine, { type: "number", min: 1, max: 60, placeholder: "pas de limite" }),
+          "Au plus, pour chaque cours de l'UE."),
+        champ("Début", entree("f-debut", m.date_debut, { type: "date" }), "Vide : début de l'année ou du groupe."),
+        champ("Fin", entree("f-fin", m.date_fin, { type: "date" }), "Vide : fin de l'année ou du groupe."),
+        impl.length ? champ("Implantation", choix("f-impl", [["", "Celle du groupe"], ...impl.map((i) => [i.id, i.nom || i.id])], m.implantation)) : null),
+      d.modules.length > 1 ? h("fieldset", { classe: "sous-bloc" }, h("legend", {}, "Prérequis (UE à terminer avant)"),
+        cases("f-prerequis", d.modules.filter((x) => x.id !== m.id).map((x) => [x.id, x.nom || x.id]), m.prerequis)) : null,
+      h("h3", {}, "Cours de l'UE"),
+      h("table", { classe: "tableau compact cliquable" }, h("thead", {}, h("tr", {}, h("th", {}, "Cours"), h("th", {}, "Périodes"), h("th", {}, "Enseignant(s)"), h("th", {}, "Réglages propres"))),
+        h("tbody", {}, m.cours.map((c) => h("tr", { tabindex: 0, onclick: () => ouvrirFiche("cours", c.id) },
+          h("td", {}, h("b", {}, c.nom || c.id)), h("td", {}, c.periodes),
+          h("td", {}, c.attributions.map((a) => a.enseignants.map((e) => nomEns(d, e)).join(" + ")).join(" / ")),
+          h("td", { classe: "discret" }, propres(c)))))),
+      h("p", { classe: "discret" }, groupes.length ? `Suivie par : ${groupes.map((g) => g.nom || g.id).join(", ")}` : "Suivie par aucun groupe."),
+    );
+    appliquer = (nd) => {
+      const mm = nd.modules.find((x) => x.id === id);
+      mm.nom = $("#f-nom", form).value.trim();
+      mm.periodes_semaine = $("#f-rythme-sem", form).value ? +$("#f-rythme-sem", form).value : null;
+      mm.date_debut = $("#f-debut", form).value || null;
+      mm.date_fin = $("#f-fin", form).value || null;
+      if ($("#f-impl", form)) mm.implantation = $("#f-impl", form).value || null;
+      if (d.modules.length > 1) mm.prerequis = coches(form, "f-prerequis");
+    };
+  } else if (type === "cours") {
     const m = d.modules.find((x) => x.cours.some((c) => c.id === id));
     if (!m) return;
     const c = m.cours.find((x) => x.id === id);
     $("#fiche-titre").textContent = c.nom || c.id;
     const impl = d.etablissement.implantations;
     ajouter(form,
-      h("p", { classe: "discret" }, `Module : ${m.nom || m.id}${m.prerequis.length ? ` · prérequis : ${m.prerequis.join(", ")}` : ""}`),
+      h("p", { classe: "discret" }, "UE : ", h("button", { type: "button", classe: "lien-texte", onclick: () => ouvrirFiche("ue", m.id) }, m.nom || m.id),
+        m.prerequis.length ? ` · prérequis : ${m.prerequis.join(", ")}` : ""),
       h("div", { classe: "grille-champs" },
         champ("Nom", entree("f-nom", c.nom)),
         champ("Périodes", entree("f-periodes", c.periodes, { type: "number", min: 1 })),
         champ("Taille des séances", choix("f-bloc", [["", `Par défaut (${libelleBloc(d.etablissement.bloc_defaut)})`], ...etat.blocs.map((b) => [b, libelleBloc(b)])], c.bloc)),
         champ("Rythme", choix("f-rythme", [["", `Par défaut (${d.calendrier.rythme_defaut})`], ["fixe", "Fixe (mêmes jours et heures)"], ["souple", "Souple"]], c.rythme)),
-        impl.length ? champ("Implantation", choix("f-impl", [["", "Celle du groupe"], ...impl.map((i) => [i.id, i.nom || i.id])], c.implantation)) : null,
+        impl.length ? champ("Implantation", choix("f-impl", [["", m.implantation ? `Celle de l'UE (${implNom(d, m.implantation)})` : "Celle de l'UE / du groupe"], ...impl.map((i) => [i.id, i.nom || i.id])], c.implantation)) : null,
+        champ("Rythme (périodes par semaine)", entree("f-rythme-sem", c.periodes_semaine, { type: "number", min: 1, max: 60,
+          placeholder: m.periodes_semaine ? `UE : ${m.periodes_semaine}` : "pas de limite" }), "Vide : celui de l'UE."),
+        champ("Début", entree("f-debut", c.date_debut, { type: "date" }), m.date_debut ? `Vide : celui de l'UE (${fmtDate(m.date_debut)}).` : "Vide : celui de l'UE."),
+        champ("Fin", entree("f-fin", c.date_fin, { type: "date" }), m.date_fin ? `Vide : celle de l'UE (${fmtDate(m.date_fin)}).` : "Vide : celle de l'UE."),
         champ("Séances max. par semaine", entree("f-max", c.max_seances_semaine, { type: "number", min: 1 })),
         champ("Équipements requis", entree("f-equip", c.equipements.join("; "), { placeholder: "pc; projecteur" }))),
       h("fieldset", { classe: "sous-bloc" }, h("legend", {}, "Cours hybride"),
@@ -582,6 +637,9 @@ function ouvrirFiche(type, id) {
       cc.bloc = $("#f-bloc", form).value || null;
       cc.rythme = $("#f-rythme", form).value || null;
       if ($("#f-impl", form)) cc.implantation = $("#f-impl", form).value || null;
+      cc.periodes_semaine = $("#f-rythme-sem", form).value ? +$("#f-rythme-sem", form).value : null;
+      cc.date_debut = $("#f-debut", form).value || null;
+      cc.date_fin = $("#f-fin", form).value || null;
       cc.max_seances_semaine = $("#f-max", form).value ? +$("#f-max", form).value : null;
       cc.equipements = $("#f-equip", form).value.split(/[;,|]/).map((x) => x.trim()).filter(Boolean);
       cc.periodes_distanciel = $("#f-hybride", form).checked ? +$("#f-dist", form).value || 0 : 0;
@@ -1097,7 +1155,7 @@ function choisirEchelle(e) {
   rendre();
 }
 
-// vue année : une ligne par mois, une case par jour (couleur = module du jour)
+// vue année : une ligne par mois, une case par jour (couleur = UE du jour)
 function rendreAnnee(zone, d, debut, fin, seances, titre) {
   $("#titre-periode").textContent = titre;
   const cal = d.calendrier, parDate = {};

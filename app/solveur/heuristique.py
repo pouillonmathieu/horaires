@@ -36,6 +36,7 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
     occ_ens = defaultdict(set)  # (e, jour, période) -> semaines
     occ_local = defaultdict(set)  # (local, jour, période) -> semaines
     charge_ens = defaultdict(int)  # (e, semaine) -> périodes
+    charge_cours = defaultdict(int)  # (groupe, cours, semaine) -> périodes (rythme maximal du cours)
     occ_res = defaultdict(int)  # (r, jour, période, semaine) -> nb
     sites_ens = defaultdict(list)  # (e, semaine) -> [(implantation, créneau)]
     plafonds = {e.id: (e.max_periodes_semaine if e.max_periodes_semaine is not None
@@ -85,6 +86,8 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
             if deplacements and not u.distanciel and u.implantation and any(
                     site != u.implantation and creneaux_incompatibles(ds, ch, autre) for site, autre in sites_ens[(e, t)]):
                 return False
+        if u.rythme and charge_cours[(u.groupe.id, u.cours.id, t)] + deja + pw > u.rythme:
+            return False
         for rs in u.cours.ressources:
             if any(occ_res[(rs, j, r, t)] >= res_q[rs] for r in ch.rangs):
                 return False
@@ -102,6 +105,7 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
                     occ_ens[(en, j, rang)].add(t)
                 for rs in u.cours.ressources:
                     occ_res[(rs, j, rang, t)] += 1
+            charge_cours[(u.groupe.id, u.cours.id, t)] += ch.periodes
             for en in u.enseignants:
                 charge_ens[(en, t)] += ch.periodes
                 if u.implantation and not u.distanciel:

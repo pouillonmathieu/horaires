@@ -22,18 +22,24 @@ l'application avec « Modèle CSV », contient un exemple complet de chaque fich
 
 Ce sont les données qui changent d'une année ou d'un quadrimestre à l'autre.
 
-### `modules.csv` : modules / unités d'enseignement
+### `ue.csv` : unités d'enseignement (UE)
+Ancien nom accepté : `modules.csv`. Dates, implantation et rythme valent pour **tous les cours de l'UE**, sauf si
+un cours précise les siens dans `cours.csv`.
+
 | Colonne | Obligatoire | Exemple | Remarque |
 |---|---|---|---|
 | `id` | oui | `UE-COMPTA-1` | |
 | `nom` | | `Comptabilité générale` | |
 | `prerequis` | | `UE-BASE` | ou fichier `prerequis.csv` ci-dessous |
+| `date_debut`, `date_fin` | | `01/02/2027` | aucun cours de l'UE avant / après ces dates |
+| `implantation` | | `NORD` | vide = implantation du groupe |
+| `periodes_semaine` | | `4` | rythme : chaque cours de l'UE reçoit **au plus** ce nombre de périodes par semaine |
 
-### `cours.csv` : cours (activités d'enseignement) de chaque module
+### `cours.csv` : cours (activités d'enseignement) de chaque UE
 | Colonne | Obligatoire | Exemple | Remarque |
 |---|---|---|---|
 | `id` | oui | `AE-1234` | unique dans tout le fichier |
-| `module` | oui | `UE-COMPTA-1` | |
+| `ue` | oui | `UE-COMPTA-1` | ancien nom accepté : `module` |
 | `nom` | | `Comptabilité – théorie` | |
 | `periodes` | oui | `60` | nombre total de périodes du cours |
 | `equipements` | | `pc` | équipement fixe exigé dans la salle |
@@ -41,9 +47,11 @@ Ce sont les données qui changent d'une année ou d'un quadrimestre à l'autre.
 | `max_seances_semaine` | | `2` | |
 | `rythme` | | `fixe` | `fixe` = mêmes jours/heures du début à la fin ; `souple` (défaut) = changements, pauses et reprises permis |
 | `bloc` | | `2` | taille des séances : `plage` (plage entière), `2` à `9` périodes (`8`/`9` = journée complète), `modulable` ; vide = paramètre de l'établissement |
-| `implantation` | | `NORD` | si le cours est donné ailleurs que sur l'implantation du groupe |
+| `implantation` | | `NORD` | vide = celle de l'UE, sinon celle du groupe |
 | `locaux` | | `INFO1\|INFO2` | locaux imposés (vide = tout local compatible) |
 | `periodes_distanciel` | | `12` | cours hybride : périodes données à distance, sans local |
+| `date_debut`, `date_fin` | | `15/03/2027` | vide = dates de l'UE |
+| `periodes_semaine` | | `8` | vide = rythme de l'UE |
 
 ### `attributions.csv` : qui donne quoi
 Une ligne par enseignant et par cours, avec ses périodes.
@@ -65,16 +73,16 @@ Un cours **réparti** entre deux enseignants qui donnent chacun leurs séances s
 | `nom` | | `Comptabilité soir` | |
 | `effectif` | oui | `18` | nombre d'inscrits (pas de liste nominative) |
 | `implantation` | | `CENTRE` | implantation où la formation est organisée |
-| `modules` | | `UE-COMPTA-1\|UE-TVA` | ou fichier `parcours.csv` ci-dessous |
+| `ue` | | `UE-COMPTA-1\|UE-TVA` | UE du parcours (ancien nom accepté : `modules`), ou fichier `parcours.csv` ci-dessous |
 | `date_debut`, `date_fin` | | `14/09/2026` | dates propres au groupe, sinon celles du calendrier |
 
-### `parcours.csv` (alternative à `groupes.modules`) : une ligne par module suivi
-| `groupe` | `module` |
+### `parcours.csv` (alternative à `groupes.ue`) : une ligne par UE suivie
+| `groupe` | `ue` |
 |---|---|
 | `G-2027-SOIR` | `UE-COMPTA-1` |
 
-### `prerequis.csv` (alternative à `modules.prerequis`) : une ligne par prérequis
-| `module` | `prerequis` |
+### `prerequis.csv` (alternative à `ue.prerequis`) : une ligne par prérequis
+| `ue` | `prerequis` |
 |---|---|
 | `UE-TVA` | `UE-COMPTA-1` |
 
@@ -110,7 +118,7 @@ les identifiants.
 ## En pratique
 
 1. Première fois : remplissez le modèle complet et importez-le.
-2. Ensuite : exportez de votre logiciel `modules`, `cours`, `attributions`, `groupes` (+ `parcours`),
+2. Ensuite : exportez de votre logiciel `ue`, `cours`, `attributions`, `groupes` (+ `parcours`),
    `enseignants`, puis importez ces fichiers en choisissant « Compléter ce qui manque avec » le jeu précédent.
 3. Si l'export de votre logiciel utilise d'autres noms de colonnes ou une autre structure,
    une correspondance peut être ajoutée dans l'application à partir d'un échantillon.

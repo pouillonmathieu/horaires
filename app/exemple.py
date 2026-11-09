@@ -88,7 +88,8 @@ EXEMPLE = {
             _c("AS-SOINS-PR", "Soins de base – pratique", 100, [_a("LAMBERT", 60), _a("MERTENS", 40)],
                equipements=["lit_medicalise"], ressources=["mannequin"]),
         ]},
-        {"id": "CPT-BASE", "nom": "Comptabilité générale", "cours": [
+        # rythme de l'UE : chaque cours au plus 8 périodes (2 soirées) par semaine
+        {"id": "CPT-BASE", "nom": "Comptabilité générale", "periodes_semaine": 8, "cours": [
             # attributions différentes selon le groupe
             _c("CPT-BASE-TH", "Comptabilité – théorie", 60, [_a("PEETERS", 60, ["CPT"]), _a("VERMEULEN", 60, ["CPT2"])]),
             _c("CPT-BASE-EX", "Comptabilité – exercices", 20, [_a("PEETERS", 20, ["CPT"]), _a("VERMEULEN", 20, ["CPT2"])]),
@@ -100,15 +101,14 @@ EXEMPLE = {
             # cours hybride : 12 périodes à distance, sans local
             _c("CPT-FISC-1", "Fiscalité", 40, [_a("PEETERS", 40)], periodes_distanciel=12),
         ]},
-        {"id": "CPT-INFO", "nom": "Logiciel comptable", "cours": [
-            # donné au labo du site Nord, alors que le groupe est au Centre
-            _c("CPT-INFO-1", "Logiciel comptable", 60, [_a("JANSSENS", 60)], equipements=["pc"], max_seances_semaine=1,
-               implantation="NORD"),
+        # UE donnée au labo du site Nord, alors que le groupe est au Centre
+        {"id": "CPT-INFO", "nom": "Logiciel comptable", "implantation": "NORD", "cours": [
+            _c("CPT-INFO-1", "Logiciel comptable", 60, [_a("JANSSENS", 60)], equipements=["pc"], max_seances_semaine=1),
         ]},
-        {"id": "INF-WIN", "nom": "Environnement Windows", "cours": [
+        {"id": "INF-WIN", "nom": "Environnement Windows", "date_fin": "2027-03-12", "cours": [
             _c("INF-WIN-1", "Windows", 40, [_a("JANSSENS", 40)], equipements=["pc"]),
         ]},
-        {"id": "INF-WORD", "nom": "Traitement de texte", "prerequis": ["INF-WIN"], "cours": [
+        {"id": "INF-WORD", "nom": "Traitement de texte", "prerequis": ["INF-WIN"], "date_debut": "2027-03-01", "cours": [
             _c("INF-WORD-1", "Traitement de texte", 40, [_a("CLAES", 40)], equipements=["pc"]),
         ]},
         {"id": "INF-EXCEL", "nom": "Tableur", "prerequis": ["INF-WIN"], "cours": [

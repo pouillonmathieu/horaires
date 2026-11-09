@@ -37,8 +37,10 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
     locaux = {l.id: l for l in ds.locaux}
     ens = {e.id: e for e in ds.enseignants}
     cours = {c.id: c for m in ds.modules for c in m.cours}
+    ue_du_cours = {c.id: m for m in ds.modules for c in m.cours}
     et = ds.etablissement
     occupe = defaultdict(int)
+    charge_cours = defaultdict(int)  # (groupe, cours, semaine) -> périodes
     sites = defaultdict(list)  # (enseignant, date) -> [(implantation, début, fin)]
     for s in r["seances"]:
         d = date.fromisoformat(s["date"])
@@ -56,8 +58,13 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
             if not s["distanciel"] and s["implantation"]:
                 sites[(e, s["date"])].append((s["implantation"], _minutes(s["heure_debut"]), _minutes(s["heure_fin"])))
         assert not ds.calendrier.ferme(d), "cours un jour de fermeture"
-        site = c.implantation or g.implantation
+        ue = ue_du_cours[c.id]
+        site = c.implantation or ue.implantation or g.implantation
+        assert s["distanciel"] or s["implantation"] == site, "implantation du cours / de l'UE non respectée"
         assert not any(ds.calendrier.ferme_pour(d, p, site) for p in plages), "cours pendant une fermeture partielle"
+        debut, fin = c.date_debut or ue.date_debut, c.date_fin or ue.date_fin
+        assert (not debut or d >= debut) and (not fin or d <= fin), "séance hors des dates de l'UE / du cours"
+        charge_cours[(g.id, c.id, d.isocalendar()[:2])] += s["periodes"]
         assert not any(st.bloque(d) for st in g.stages), "cours pendant un stage"
         assert any(a.enseignants == s["enseignants"] for a in c.attributions_pour(g.id))
         assert not g.creneaux or all(p in g.creneaux for p in plages)
@@ -76,6 +83,9 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
             assert not s["implantation"] or not ens[e].implantations or s["implantation"] in ens[e].implantations
     doublons = [k for k, n in occupe.items() if n > 1]
     assert not doublons, f"doubles réservations : {doublons[:5]}"
+    for (gid, cid, _), n in charge_cours.items():
+        rythme = cours[cid].periodes_semaine or ue_du_cours[cid].periodes_semaine
+        assert not rythme or n <= rythme, f"rythme dépassé pour {gid}/{cid} : {n} > {rythme}"
     for (e, jour), lst in sites.items():
         lst.sort(key=lambda x: x[1])
         for (s1, _d1, f1), (s2, d2, _f2) in zip(lst, lst[1:]):
@@ -194,7 +204,7 @@ def test_etablissement_genere_coherent():
 def test_validation_references():
     brut = copy.deepcopy(EXEMPLE)
     brut["groupes"][0]["modules"] = ["INEXISTANT"]
-    with pytest.raises(ValueError, match="module inconnu"):
+    with pytest.raises(ValueError, match="UE inconnue"):
         JeuDeDonnees.model_validate(brut)
     brut = copy.deepcopy(EXEMPLE)
     brut["modules"][0]["cours"][0]["attributions"][0]["periodes"] = 50
@@ -390,6 +400,35 @@ def test_disponibilites_des_locaux():
     assert {l["cours"]: l["periodes_manquantes"] for l in r["synthese"]} == {"CA": 0, "CB": 16}
     with pytest.raises(ValueError, match="créneau inconnu"):
         petit_jeu(**{"locaux.0.disponibilites": ["lun:nuit"]})
+
+
+def test_parametres_d_ue_herites_par_les_cours():
+    # UE MA : dates, implantation Y et rythme de 4 p./semaine, hérités par le cours CA
+    ds = petit_jeu(**{"modules.0.date_debut": "2027-02-01", "modules.0.date_fin": "2027-03-19",
+                      "modules.0.implantation": "Y", "modules.0.periodes_semaine": 4,
+                      "groupes.1.modules": [], "etablissement.delai_deplacement_min": 0})
+    r = _planifier(ds)  # verifier_coherence : dates, implantation et rythme de chaque séance
+    ca = [s for s in r["seances"] if s["cours"] == "CA"]
+    assert sum(s["periodes"] for s in ca) == 16
+    assert all("2027-02-01" <= s["date"] <= "2027-03-19" and s["implantation"] == "Y" and s["local"] == "LY" for s in ca)
+    semaines = defaultdict(int)
+    for s in ca:
+        semaines[date.fromisoformat(s["date"]).isocalendar()[1]] += s["periodes"]
+    assert max(semaines.values()) <= 4 and len(semaines) >= 4
+    # le cours peut préciser les siens : ils l'emportent sur ceux de l'UE
+    ds = petit_jeu(**{"modules.0.date_debut": "2027-02-01", "modules.0.implantation": "Y", "modules.0.periodes_semaine": 4,
+                      "modules.0.cours.0.date_debut": "2027-01-04", "modules.0.cours.0.implantation": "X",
+                      "modules.0.cours.0.periodes_semaine": 8, "groupes.1.modules": []})
+    r = _planifier(ds)
+    ca = [s for s in r["seances"] if s["cours"] == "CA"]
+    assert all(s["implantation"] == "X" for s in ca) and min(s["date"] for s in ca) < "2027-02-01"
+    # diagnostic : rythme plus petit qu'une séance, ou trop lent pour la période
+    trop_petit = petit_jeu(**{"modules.0.periodes_semaine": 2})
+    assert any("plus petit qu'une séance" in d["message"] for d in avant_planification(trop_petit))
+    trop_lent = petit_jeu(**{"modules.0.periodes_semaine": 4, "modules.0.date_fin": "2027-01-17"})
+    assert any("rythme de 4 p./semaine trop lent" in d["message"] for d in avant_planification(trop_lent))
+    with pytest.raises(ValueError, match="implantation inconnue"):
+        petit_jeu(**{"modules.0.implantation": "Z"})
 
 
 def test_plage_du_samedi():

@@ -8,11 +8,12 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 
 | Contrainte | Où la saisir |
 |---|---|
-| Modules composés de plusieurs cours | `Modules`, `Cours` |
+| UE (unités d'enseignement) composées de plusieurs cours | `UE`, `Cours` |
+| Dates, implantation et rythme (périodes par semaine) d'une UE, repris par ses cours sauf indication contraire | `UE.date_debut`, `date_fin`, `implantation`, `periodes_semaine` (idem dans `Cours`) |
 | Cours **réparti** entre enseignants (ex. 40 p. + 20 p.) | plusieurs lignes `Attributions` pour un cours |
 | **Co-enseignement** (plusieurs enseignants présents ensemble) | plusieurs enseignants sur une ligne `Attributions` |
 | Enseignant différent selon le groupe | colonne `Attributions.groupes` |
-| Modules préalables (prérequis) : un module se termine avant le début du suivant | `Modules.prerequis` |
+| UE préalables (prérequis) : une UE se termine avant le début de la suivante | `UE.prerequis` |
 | Jours de cours et créneaux (matin / après-midi / soir…) par groupe | `Parametres`, `Creneaux`, `Groupes.jours_cours`, `Groupes.creneaux` |
 | Jours de stage (pas de cours) | `Stages` |
 | Jours fériés (toujours fermés), congés scolaires (cours possibles si l'établissement le prévoit) et jours spéciaux (formation continue, fête de l'école…), éventuellement limités à un moment de la journée ou à une implantation | `Fermetures.type`, `creneaux`, `implantations`, `cours_pendant_conges` |
@@ -60,7 +61,7 @@ Trois formats, mêmes tables :
 
 - **CSV**, pour les exports du logiciel de gestion : un fichier par table, nommé comme la table
   (`parametres.csv`, `creneaux.csv`, `fermetures.csv`, `locaux.csv`, `ressources.csv`, `enseignants.csv`,
-  `indisponibilites.csv`, `modules.csv`, `cours.csv`, `attributions.csv`, `groupes.csv`, `stages.csv`).
+  `indisponibilites.csv`, `ue.csv`, `cours.csv`, `attributions.csv`, `groupes.csv`, `stages.csv`).
   Envoyez-les tous d'un coup ou dans un `.zip`. L'import tolère :
   - les séparateurs `;`, `,` et tabulation ;
   - les encodages UTF-8 (avec ou sans BOM) et Windows-1252 ;
@@ -74,7 +75,7 @@ Les modèles Excel et CSV sont téléchargeables depuis l'application et contien
 La spécification détaillée des fichiers CSV, à transmettre à la personne qui configure l'export du
 logiciel de gestion, est dans [`docs/FORMAT_CSV.md`](docs/FORMAT_CSV.md).
 
-**Import partiel.** Il suffit de réinjecter ce que le logiciel de gestion exporte (modules, cours,
+**Import partiel.** Il suffit de réinjecter ce que le logiciel de gestion exporte (UE, cours,
 attributions, groupes…). Avec l'option « Compléter ce qui manque avec », les autres tables (créneaux,
 locaux, congés, stages…) et les colonnes absentes (disponibilités des enseignants…) sont reprises d'un
 jeu existant. Les liens peuvent aussi être fournis une ligne par lien (`parcours.csv`, `prerequis.csv`).
@@ -120,7 +121,7 @@ horaire. Voir la feuille de route.
 
 | Mesure | Détail |
 |---|---|
-| Chiffrement au repos | Toutes les données métier (noms, modules, horaires) sont chiffrées en **AES-256-GCM**. Chaque bloc est lié à son enregistrement : une copie ou une falsification est détectée. Les tests vérifient qu'aucun nom n'apparaît en clair dans la base. |
+| Chiffrement au repos | Toutes les données métier (noms, UE, horaires) sont chiffrées en **AES-256-GCM**. Chaque bloc est lié à son enregistrement : une copie ou une falsification est détectée. Les tests vérifient qu'aucun nom n'apparaît en clair dans la base. |
 | Clé maîtresse | Fournie par variable d'environnement ou coffre-fort de secrets, jamais stockée avec la base. |
 | Mots de passe | Argon2id, 12 caractères minimum, comparaison à temps constant. |
 | Anti-force brute | Blocage de 15 min après 5 échecs (par compte et par IP). |
@@ -196,7 +197,7 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 35 tests couvrent le moteur, les imports et la sécurité :
+Les 36 tests couvrent le moteur, les imports et la sécurité :
 - **moteur** :
   - aucune double réservation (groupe, local, enseignant), période par période ;
   - respect de chaque contrainte : prérequis, co-enseignement, répartition entre enseignants,
@@ -214,7 +215,7 @@ Les 35 tests couvrent le moteur, les imports et la sécurité :
 
 Mesures sur un établissement fictif à la taille maximale visée, généré par `scripts/generer_instance.py`
 (machine de test à 4 cœurs) :
-- **taille** : 100 groupes (≈ 2 000 apprenants), 200 enseignants, 458 modules, 920 cours, 35 100 périodes, 71 locaux ;
+- **taille** : 100 groupes (≈ 2 000 apprenants), 200 enseignants, 458 UE, 920 cours, 35 100 périodes, 71 locaux ;
 - **calendrier** : une année scolaire avec congés et stages.
 
 | Durée de calcul | Périodes placées | Séances | Séances sans local |

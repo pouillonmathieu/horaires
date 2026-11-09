@@ -130,6 +130,9 @@ class Unite:
     distanciel: bool = False
     implantation: str | None = None
     bloc: str = "plage"
+    date_debut: date | None = None  # fenêtre du cours (cours, sinon UE)
+    date_fin: date | None = None
+    rythme: int | None = None  # périodes par semaine au maximum pour ce cours et ce groupe (cours, sinon UE)
 
     @property
     def cle(self) -> str:
@@ -161,8 +164,10 @@ def construire_unites(ds: JeuDeDonnees) -> list[Unite]:
                 dist = _repartir(c.periodes_distanciel, [a.periodes for a in attrs]) if c.periodes_distanciel else [0] * len(attrs)
                 for i, (a, d) in enumerate(zip(attrs, dist)):
                     commun = dict(groupe=g, module=m, cours=c, part=i, enseignants=tuple(a.enseignants),
-                                  implantation=c.implantation or g.implantation,
-                                  bloc=c.bloc or ds.etablissement.bloc_defaut)
+                                  implantation=c.implantation or m.implantation or g.implantation,
+                                  bloc=c.bloc or ds.etablissement.bloc_defaut,
+                                  date_debut=c.date_debut or m.date_debut, date_fin=c.date_fin or m.date_fin,
+                                  rythme=c.periodes_semaine or m.periodes_semaine)
                     if a.periodes - d > 0:
                         out.append(Unite(len(out), periodes=a.periodes - d, **commun))
                     if d > 0:
@@ -315,15 +320,20 @@ class Horizon:
         return self._cache_base[cle]
 
     def base_unite(self, u: Unite, ch: CreneauHebdo) -> list[int]:
-        """Semaines ouvertes pour le groupe, moins les fermetures partielles qui touchent ce créneau ou ce site."""
+        """Semaines ouvertes pour le groupe, dans la fenêtre du cours (dates du cours ou de l'UE),
+        moins les fermetures partielles qui touchent ce créneau ou ce site."""
         base = self.base_groupe(u.groupe, ch)
-        if not self._partielles:
+        if not self._partielles and not u.date_debut and not u.date_fin:
             return base
-        cle = (u.groupe.id, ch.jour_idx, ch.plages, u.implantation)
+        cle = (u.groupe.id, ch.jour_idx, ch.plages, u.implantation, u.date_debut, u.date_fin)
         if cle not in self._cache_partiel:
-            self._cache_partiel[cle] = [
-                int(ok and not any(f.bloque(self.date(t, ch), p, u.implantation) for f in self._partielles for p in ch.plages))
-                for t, ok in enumerate(base)]
+            ligne = []
+            for t, ok in enumerate(base):
+                d = self.date(t, ch)
+                ok = ok and (not u.date_debut or d >= u.date_debut) and (not u.date_fin or d <= u.date_fin) \
+                    and not any(f.bloque(d, p, u.implantation) for f in self._partielles for p in ch.plages)
+                ligne.append(int(ok))
+            self._cache_partiel[cle] = ligne
         return self._cache_partiel[cle]
 
     def locaux_ouverts(self, E: frozenset, ch: CreneauHebdo) -> frozenset:
@@ -354,7 +364,7 @@ class Horizon:
         ens = [self.enseignants[e] for e in u.enseignants]
         if not all(dispo_hebdo(e, ch.jour, p) for e in ens for p in ch.plages):
             return None
-        cle = (u.groupe.id, u.enseignants, ch.jour_idx, ch.plages, u.implantation)
+        cle = (u.groupe.id, u.enseignants, ch.jour_idx, ch.plages, u.implantation, u.date_debut, u.date_fin)
         if cle not in self._cache_unite:
             base = self.base_unite(u, ch)
             ligne = []
@@ -631,7 +641,20 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
         if u.cours.max_seances_semaine and len(premiers) > u.cours.max_seances_semaine:
             mdl.Add(sum(v.present for v in premiers) <= u.cours.max_seances_semaine)
 
-    # prérequis entre modules, par groupe
+    # rythme : un cours ne reçoit pas plus de N périodes par semaine (pour un groupe, toutes attributions
+    # et séances à distance confondues). Les intervalles sont en semaines : une cumulative suffit.
+    par_cours = defaultdict(list)
+    for v in vars_uw:
+        if v.u.rythme:
+            par_cours[(v.u.groupe.id, v.u.cours.id)].append(v)
+    nb_rythme = 0
+    for vs in par_cours.values():
+        r = vs[0].u.rythme
+        if sum(v.ch.periodes for v in vs) > r:
+            mdl.AddCumulative([v.intervalle for v in vs], [v.ch.periodes for v in vs], r)
+            nb_rythme += 1
+
+    # prérequis entre UE, par groupe
     debut_m, fin_m = {}, {}
     for u in unites:
         k = (u.groupe.id, u.module.id)
@@ -651,7 +674,7 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
 
     stats = {"unites": len(unites), "variables_hebdo": len(vars_uw), "semaines": T,
              "creneaux_hebdo": len(hz.creneaux_hebdo), "contraintes_non_chevauchement": nb_no,
-             "contraintes_locaux": nb_hall, "contraintes_deplacement": nb_deplacements}
+             "contraintes_locaux": nb_hall, "contraintes_deplacement": nb_deplacements, "contraintes_rythme": nb_rythme}
     if not vars_uw:
         res = Resultat("OPTIMAL" if not unites else "REALISABLE", time.monotonic() - t0, alertes=alertes,
                        statistiques=stats, structure=hz.structure())
