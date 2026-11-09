@@ -26,7 +26,7 @@ ONGLETS: dict[str, list[str]] = {
     "Parametres": ["cle", "valeur"],
     "Implantations": ["id", "nom", "adresse"],
     "Creneaux": ["id", "libelle", "heure_debut", "heure_fin", "periodes", "jours"],
-    "Fermetures": ["date_debut", "date_fin", "motif", "type"],
+    "Fermetures": ["date_debut", "date_fin", "motif", "type", "creneaux", "implantations"],
     "Locaux": ["id", "nom", "implantation", "capacite", "equipements"],
     "Ressources": ["id", "nom", "quantite"],
     "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine", "implantations", "date_debut", "date_fin"],
@@ -51,7 +51,9 @@ AIDE = {
     "Implantations": "Sites de l'établissement (laisser vide s'il n'y en a qu'un).",
     "Creneaux": "Plages horaires (matin, après-midi, soir…) et leur nombre de périodes. « jours » : seulement ces "
                 "jours (ex. sam pour une plage du samedi) ; vide = tous les jours de cours.",
-    "Fermetures": "type : ferie (toujours fermé) ou conges (congé scolaire, ouvert si cours_pendant_conges = oui).",
+    "Fermetures": "type : ferie (toujours fermé), conges (congé scolaire, ouvert si cours_pendant_conges = oui) ou "
+                  "special (jour spécial : formation continue, fête de l'école…). creneaux : seulement ces plages "
+                  "(ex. aprem) ; implantations : seulement ces sites. Vide = toute la journée, tous les sites.",
     "Locaux": "Implantation, capacité en places assises, équipements fixes séparés par « ; » (ex. pc;projecteur).",
     "Ressources": "Matériel mobile partagé, en nombre d'unités (1 unité mobilisée par séance).",
     "Enseignants": "Disponibilités : jour:plage séparés par « ; » (ex. lun:soir;mer:*), vide = toujours. Implantations "
@@ -347,7 +349,8 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 "fermetures": [
                     {"date_debut": _date(obligatoire(r, "date_debut", "Fermetures")),
                      "date_fin": _date(r.get("date_fin")) or _date(r["date_debut"]), "motif": _texte(r.get("motif")),
-                     "type": _type_fermeture(r.get("type"))}
+                     "type": _type_fermeture(r.get("type")), "creneaux": _liste(r.get("creneaux")),
+                     "implantations": _liste(r.get("implantations"))}
                     for r in lire("Fermetures")
                 ],
             },
@@ -400,7 +403,10 @@ def _type_fermeture(v: Any) -> str:
         return "ferie"
     if s in ("conges", "conge", "conges_scolaires", "vacances", "c"):
         return "conges"
-    raise ErreurImport(f"type de fermeture « {v} » : attendu ferie ou conges")
+    if s in ("special", "speciale", "jour_special", "journee_speciale", "evenement", "formation", "formation_continue",
+             "journee_pedagogique", "s"):
+        return "special"
+    raise ErreurImport(f"type de fermeture « {v} » : attendu ferie, conges ou special")
 
 
 def excel_vers_donnees(contenu: bytes, complement: JeuDeDonnees | None = None) -> JeuDeDonnees:
@@ -499,7 +505,8 @@ def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
                        ["max_periodes_semaine_defaut", et.max_periodes_semaine_defaut]],
         "Implantations": [[i.id, i.nom, i.adresse] for i in et.implantations],
         "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes, _j(c.jours)] for c in cal.creneaux],
-        "Fermetures": [[f.date_debut, f.date_fin, f.motif, f.type] for f in cal.fermetures],
+        "Fermetures": [[f.date_debut, f.date_fin, f.motif, f.type, _j(f.creneaux), _j(f.implantations)]
+                       for f in cal.fermetures],
         "Locaux": [[l.id, l.nom, l.implantation, l.capacite, _j(l.equipements)] for l in ds.locaux],
         "Ressources": [[r.id, r.nom, r.quantite] for r in ds.ressources],
         "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine, _j(e.implantations), e.date_debut,

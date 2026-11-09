@@ -222,6 +222,9 @@ class Horizon:
                             for t in range(self.T)] for j in self.jours}
         self._cache_base: dict = {}
         self._cache_unite: dict = {}
+        # fermetures limitées à certains créneaux ou implantations (jours spéciaux, fermeture d'un site…)
+        self._partielles = [f for f in cal.fermetures_actives() if f.partielle]
+        self._cache_partiel: dict = {}
 
     # -- blocs possibles
     def positions(self, jour_idx: int, bloc: str, sans_chevauchement: bool = False) -> list[tuple[int, int]]:
@@ -308,18 +311,30 @@ class Horizon:
             self._cache_base[cle] = ligne
         return self._cache_base[cle]
 
+    def base_unite(self, u: Unite, ch: CreneauHebdo) -> list[int]:
+        """Semaines ouvertes pour le groupe, moins les fermetures partielles qui touchent ce créneau ou ce site."""
+        base = self.base_groupe(u.groupe, ch)
+        if not self._partielles:
+            return base
+        cle = (u.groupe.id, ch.jour_idx, ch.plages, u.implantation)
+        if cle not in self._cache_partiel:
+            self._cache_partiel[cle] = [
+                int(ok and not any(f.bloque(self.date(t, ch), p, u.implantation) for f in self._partielles for p in ch.plages))
+                for t, ok in enumerate(base)]
+        return self._cache_partiel[cle]
+
     def dispo_unite(self, u: Unite, ch: CreneauHebdo, avec_enseignants: bool = True) -> list[int] | None:
         """Semaines où l'unité peut avoir séance à ce créneau hebdomadaire (None = créneau exclu)."""
         if not self.groupe_autorise(u.groupe, ch):
             return None
         if not avec_enseignants:
-            return self.base_groupe(u.groupe, ch)
+            return self.base_unite(u, ch)
         ens = [self.enseignants[e] for e in u.enseignants]
         if not all(dispo_hebdo(e, ch.jour, p) for e in ens for p in ch.plages):
             return None
-        cle = (u.groupe.id, u.enseignants, ch.jour_idx, ch.plages)
+        cle = (u.groupe.id, u.enseignants, ch.jour_idx, ch.plages, u.implantation)
         if cle not in self._cache_unite:
-            base = self.base_groupe(u.groupe, ch)
+            base = self.base_unite(u, ch)
             ligne = []
             for t in range(self.T):
                 ok = base[t]

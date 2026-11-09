@@ -56,6 +56,8 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
             if not s["distanciel"] and s["implantation"]:
                 sites[(e, s["date"])].append((s["implantation"], _minutes(s["heure_debut"]), _minutes(s["heure_fin"])))
         assert not ds.calendrier.ferme(d), "cours un jour de fermeture"
+        site = c.implantation or g.implantation
+        assert not any(ds.calendrier.ferme_pour(d, p, site) for p in plages), "cours pendant une fermeture partielle"
         assert not any(st.bloque(d) for st in g.stages), "cours pendant un stage"
         assert any(a.enseignants == s["enseignants"] for a in c.attributions_pour(g.id))
         assert not g.creneaux or all(p in g.creneaux for p in plages)
@@ -347,6 +349,29 @@ def test_contrat_et_conges():
                           "calendrier.fermetures": [{"date_debut": "2027-01-11", "date_fin": "2027-01-22", "type": "conges"},
                                                     {"date_debut": "2027-01-18", "date_fin": "2027-01-18", "type": "ferie"}]})
     assert not ouvert.calendrier.ferme(date(2027, 1, 12)) and ouvert.calendrier.ferme(date(2027, 1, 18))
+
+
+def test_jours_speciaux():
+    speciaux = [
+        {"date_debut": "2027-01-05", "date_fin": "2027-01-05", "motif": "Formation continue", "type": "special"},
+        {"date_debut": "2027-01-11", "date_fin": "2027-01-11", "motif": "Portes ouvertes", "type": "special", "implantations": ["X"]},
+        {"date_debut": "2027-01-12", "date_fin": "2027-01-12", "motif": "Fête de l'école", "type": "special", "creneaux": ["aprem"]},
+    ]
+    # « cours pendant les congés » ne rouvre pas les jours spéciaux
+    ds = petit_jeu(**{"calendrier.fermetures": speciaux, "calendrier.cours_pendant_conges": True})
+    cal = ds.calendrier
+    assert cal.ferme(date(2027, 1, 5)) and not cal.ferme(date(2027, 1, 11)) and not cal.ferme(date(2027, 1, 12))
+    assert cal.ferme_pour(date(2027, 1, 11), "matin", "X") and not cal.ferme_pour(date(2027, 1, 11), "matin", "Y")
+    assert cal.ferme_pour(date(2027, 1, 12), "aprem", "Y") and not cal.ferme_pour(date(2027, 1, 12), "matin", "X")
+    r = _planifier(ds)  # verifier_coherence contrôle chaque séance contre les fermetures partielles
+    assert sum(l["periodes_manquantes"] for l in r["synthese"]) == 0
+    assert not any(s["date"] == "2027-01-05" for s in r["seances"])
+    assert not any(s["date"] == "2027-01-11" and s["groupe"] == "GA" for s in r["seances"])
+    assert not any(s["date"] == "2027-01-12" and s["groupe"] == "GB" for s in r["seances"])
+    with pytest.raises(ValueError, match="créneau inconnu"):
+        petit_jeu(**{"calendrier.fermetures": [{"date_debut": "2027-01-05", "date_fin": "2027-01-05", "creneaux": ["nuit"]}]})
+    with pytest.raises(ValueError, match="implantation inconnue"):
+        petit_jeu(**{"calendrier.fermetures": [{"date_debut": "2027-01-05", "date_fin": "2027-01-05", "implantations": ["Z"]}]})
 
 
 def test_plage_du_samedi():

@@ -61,9 +61,14 @@
             </div>
             <label class="case-a-cocher"><input type="checkbox" id="p-conges"> Des cours ont lieu pendant les congés scolaires</label>
             <div class="champ-groupe">
-              <span class="etiquette">Jours fériés et congés</span>
-              <table class="tableau compact" id="p-fermetures"><thead><tr><th>Du</th><th>Au</th><th>Motif</th><th>Type</th><th></th></tr></thead><tbody></tbody></table>
-              <button type="button" class="petit" id="p-ajout-fermeture">+ Ajouter une fermeture</button>
+              <span class="etiquette">Jours fériés, congés et jours spéciaux</span>
+              <p class="discret aide">Pas de cours ces jours-là. Un jour spécial (formation continue, fête de l'école…) peut ne
+                concerner qu'un moment de la journée ou qu'une implantation ; il reste fermé même si des cours ont lieu pendant les congés.</p>
+              <div class="defile"><table class="tableau compact" id="p-fermetures"><thead><tr><th>Du</th><th>Au</th><th>Motif</th><th>Type</th><th>Moment</th><th>Implantation</th><th></th></tr></thead><tbody></tbody></table></div>
+              <div class="ligne">
+                <button type="button" class="petit" id="p-ajout-fermeture">+ Congé ou jour férié</button>
+                <button type="button" class="petit" id="p-ajout-special">+ Jour spécial</button>
+              </div>
             </div>
           </fieldset>
 

@@ -158,12 +158,21 @@ def test_accueil_modification_et_seance(env):
     d["groupes"][0]["modules"] = ["INCONNU"]
     r = c.put(f"/api/jeux/{jid}/donnees", headers=h, json={"version": j["version"] + 1, "donnees": d})
     assert r.status_code == 422 and r.json()["detail"]["erreurs"]
+    # paramètres modifiés (plus de cours le vendredi, un jour spécial) : la planification suivante en tient compte
+    d = c.get(f"/api/jeux/{jid}").json()["donnees"]
+    d["calendrier"]["jours_cours"] = ["lun", "mar", "mer", "jeu"]
+    d["calendrier"]["fermetures"].append({"date_debut": "2027-01-13", "date_fin": "2027-01-13", "motif": "Fête", "type": "special"})
+    for g in d["groupes"]:
+        g["jours_cours"] = [j for j in g["jours_cours"] if j != "ven"]
+    r = c.put(f"/api/jeux/{jid}/donnees", headers=h, json={"version": j["version"] + 1, "donnees": d})
+    assert r.status_code == 200, r.text
     hid = c.post(f"/api/jeux/{jid}/planifier", headers=h, json={"duree_max_s": 10}).json()["id"]
     for _ in range(120):
         x = c.get(f"/api/horaires/{hid}").json()
         if x["statut"] != "en_cours":
             break
         time.sleep(0.5)
+    assert x["contenu"]["seances"] and all(s["jour"] != "ven" and s["date"] != "2027-01-13" for s in x["contenu"]["seances"])
     s = x["contenu"]["seances"][0]
     assert x["contenu"]["donnees"]["nom"]  # instantané des données dans l'horaire
     r = c.patch(f"/api/horaires/{hid}/seances/{s['id']}", headers=h, json={"distanciel": True})

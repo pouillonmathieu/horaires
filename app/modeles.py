@@ -82,9 +82,27 @@ class Stage(Periode):
         return self.contient(d) and (not self.jours or JOURS[d.weekday()] in self.jours)
 
 
+TYPES_FERMETURE = ("ferie", "conges", "special")
+
+
 class Fermeture(Periode):
-    """Jour férié (toujours fermé) ou congé scolaire (cours possibles si l'établissement le prévoit)."""
-    type: Literal["ferie", "conges"] = "ferie"
+    """Jour sans cours : férié (toujours fermé), congé scolaire (cours possibles si l'établissement le prévoit)
+    ou jour spécial propre à l'établissement (formation continue, fête de l'école…).
+
+    Une fermeture peut ne concerner qu'une partie de la journée (`creneaux`) ou que certaines implantations.
+    """
+    type: Literal["ferie", "conges", "special"] = "ferie"
+    creneaux: list[Id] = Field(default_factory=list, description="vide = toute la journée")
+    implantations: list[Id] = Field(default_factory=list, description="vide = toutes les implantations")
+
+    @property
+    def partielle(self) -> bool:
+        return bool(self.creneaux or self.implantations)
+
+    def bloque(self, d: date, creneau_id: str | None, implantation: str | None) -> bool:
+        """Vrai si cette fermeture empêche un cours ce jour-là, sur ce créneau, dans cette implantation."""
+        return (self.contient(d) and (not self.creneaux or creneau_id in self.creneaux)
+                and (not self.implantations or implantation in self.implantations))
 
 
 class Creneau(Strict):
@@ -124,10 +142,20 @@ class Calendrier(Strict):
     jours_cours: list[str] = Field(default_factory=lambda: ["lun", "mar", "mer", "jeu", "ven"])
     cours_pendant_conges: bool = Field(default=False, description="des cours ont lieu pendant les congés scolaires")
     creneaux: list[Creneau] = Field(min_length=1, max_length=30)
-    fermetures: list[Fermeture] = Field(default_factory=list, description="jours fériés, congés, vacances")
+    fermetures: list[Fermeture] = Field(default_factory=list, max_length=500,
+                                        description="jours fériés, congés, vacances, jours spéciaux")
+
+    def fermetures_actives(self) -> list[Fermeture]:
+        """Fermetures qui empêchent réellement les cours (les congés ne comptent pas si des cours y sont prévus)."""
+        return [f for f in self.fermetures if f.type != "conges" or not self.cours_pendant_conges]
 
     def ferme(self, d: date) -> bool:
-        return any(f.contient(d) and (f.type == "ferie" or not self.cours_pendant_conges) for f in self.fermetures)
+        """Établissement fermé toute la journée, sur toutes les implantations."""
+        return any(f.contient(d) and not f.partielle for f in self.fermetures_actives())
+
+    def ferme_pour(self, d: date, creneau_id: str | None, implantation: str | None) -> bool:
+        """Pas de cours ce jour-là sur ce créneau dans cette implantation (fermetures partielles comprises)."""
+        return any(f.bloque(d, creneau_id, implantation) for f in self.fermetures_actives())
 
     @field_validator("jours_cours")
     @classmethod
@@ -336,6 +364,12 @@ class JeuDeDonnees(Strict):
                 implantation_connue(f"enseignant {e.id}", i)
             if e.date_debut and e.date_fin and e.date_fin < e.date_debut:
                 erreurs.append(f"enseignant {e.id} : la fin de contrat précède l'engagement")
+
+        for f in self.calendrier.fermetures:
+            quoi = f"fermeture du {f.date_debut}" + (f" ({f.motif})" if f.motif else "")
+            erreurs += [f"{quoi} : créneau inconnu « {c} »" for c in f.creneaux if c not in creneaux]
+            for i in f.implantations:
+                implantation_connue(quoi, i)
 
         for e in self.enseignants:
             for d in e.disponibilites:

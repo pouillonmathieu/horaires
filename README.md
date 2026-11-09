@@ -15,7 +15,7 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Modules préalables (prérequis) : un module se termine avant le début du suivant | `Modules.prerequis` |
 | Jours de cours et créneaux (matin / après-midi / soir…) par groupe | `Parametres`, `Creneaux`, `Groupes.jours_cours`, `Groupes.creneaux` |
 | Jours de stage (pas de cours) | `Stages` |
-| Jours fériés (toujours fermés) et congés scolaires (cours possibles si l'établissement le prévoit) | `Fermetures.type`, `cours_pendant_conges` |
+| Jours fériés (toujours fermés), congés scolaires (cours possibles si l'établissement le prévoit) et jours spéciaux (formation continue, fête de l'école…), éventuellement limités à un moment de la journée ou à une implantation | `Fermetures.type`, `creneaux`, `implantations`, `cours_pendant_conges` |
 | Plages horaires et nombre de périodes, y compris des plages propres au samedi | `Creneaux` (= plages), `Creneaux.jours` |
 | Taille des séances : plage entière, 2 à 9 périodes (8/9 = journée complète), modulable | `bloc_defaut`, `Cours.bloc` |
 | Implantations : formation rattachée à un site, cours donné sur un autre site, locaux par site | `Implantations`, `Groupes.implantation`, `Cours.implantation`, `Locaux.implantation` |
@@ -195,7 +195,7 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 33 tests couvrent le moteur, les imports et la sécurité :
+Les 34 tests couvrent le moteur, les imports et la sécurité :
 - **moteur** :
   - aucune double réservation (groupe, local, enseignant), période par période ;
   - respect de chaque contrainte : prérequis, co-enseignement, répartition entre enseignants,

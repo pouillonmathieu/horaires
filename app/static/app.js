@@ -287,12 +287,36 @@ function allerEtape(n) {
 $("#p-prec").addEventListener("click", () => allerEtape(etat.etape - 1));
 $("#p-suiv").addEventListener("click", () => allerEtape(etat.etape + 1));
 
-function ligneFermeture(f = { date_debut: "", date_fin: "", motif: "", type: "conges" }) {
+const TYPES_FERMETURE = { conges: "Congé scolaire", ferie: "Jour férié", special: "Jour spécial" };
+// options « toute la journée / plage » et « tous les sites / site », d'après le formulaire en cours d'édition
+function optionsPortee(sel, options, valeur) {
+  const v = valeur ?? sel.value;
+  vider(sel).append(...options.map(([val, lib]) => h("option", { value: val }, lib)));
+  const nom = (id) => options.find(([val]) => val === id)?.[1] || id;
+  if (v && !options.some(([val]) => val === v)) sel.append(h("option", { value: v }, v.split(",").map(nom).join(" + ")));
+  sel.value = v || "";
+}
+// une plage seule, ou une plage et toutes les suivantes (ex. « Après-midi + Soir »)
+function optionsPlages() {
+  const pl = lirePlages().filter((p) => p.heure_debut).sort((a, b) => a.heure_debut.localeCompare(b.heure_debut));
+  const nom = (p) => p.libelle || p.id;
+  const suites = pl.slice(1, -1).map((p, i) => pl.slice(i + 1)).map((x) => [x.map((p) => p.id).join(","), x.map(nom).join(" + ")]);
+  return [["", "toute la journée"], ...pl.map((p) => [p.id, nom(p)]), ...suites];
+}
+const optionsSites = () => [["", "tous les sites"], ...($("#p-multi-impl").checked ? lireImplantations().map((i) => [i.id, i.nom || i.id]) : [])];
+const nouvelleFermeture = { date_debut: "", date_fin: "", motif: "", type: "conges", creneaux: [], implantations: [] };
+function ligneFermeture(f = nouvelleFermeture) {
+  const type = h("select", { "aria-label": "Type" }, Object.entries(TYPES_FERMETURE).map(([v, l]) => h("option", { value: v }, l)));
+  type.value = f.type || "ferie";
+  const plages = h("select", { "aria-label": "Moment", onfocus: () => optionsPortee(plages, optionsPlages()) });
+  const sites = h("select", { "aria-label": "Implantation", onfocus: () => optionsPortee(sites, optionsSites()) });
+  optionsPortee(plages, optionsPlages(), (f.creneaux || []).join(","));
+  optionsPortee(sites, optionsSites(), (f.implantations || []).join(","));
   return h("tr", {},
     h("td", {}, h("input", { type: "date", valeur: f.date_debut, "aria-label": "Du" })),
     h("td", {}, h("input", { type: "date", valeur: f.date_fin, "aria-label": "Au" })),
-    h("td", {}, h("input", { valeur: f.motif, placeholder: "Vacances d'hiver", "aria-label": "Motif" })),
-    h("td", {}, h("select", { "aria-label": "Type" }, h("option", { value: "conges" }, "Congé scolaire"), h("option", { value: "ferie" }, "Jour férié / fermeture"))),
+    h("td", {}, h("input", { valeur: f.motif, placeholder: "Formation continue", "aria-label": "Motif" })),
+    h("td", {}, type), h("td", {}, plages), h("td", {}, sites),
     h("td", {}, h("button", { type: "button", classe: "petit danger", onclick: (e) => e.currentTarget.closest("tr").remove() }, "Retirer")));
 }
 function lignePlage(p = { id: "", libelle: "", heure_debut: "", heure_fin: "", periodes: 4, jours: [] }) {
@@ -319,7 +343,12 @@ function ligneImpl(i = { id: "", nom: "", adresse: "" }) {
     h("td", {}, h("input", { valeur: i.adresse, placeholder: "Adresse", "aria-label": "Adresse" })),
     h("td", {}, h("button", { type: "button", classe: "petit danger", onclick: (e) => e.currentTarget.closest("tr").remove() }, "Retirer")));
 }
-$("#p-ajout-fermeture").addEventListener("click", () => $("#p-fermetures tbody").append(ligneFermeture()));
+$("#p-ajout-fermeture").addEventListener("click", () => $("#p-fermetures tbody").append(ligneFermeture({ ...nouvelleFermeture, type: "conges" })));
+$("#p-ajout-special").addEventListener("click", () => {
+  const l = ligneFermeture({ ...nouvelleFermeture, type: "special" });
+  $("#p-fermetures tbody").append(l);
+  $("input", l).focus();
+});
 $("#p-ajout-plage").addEventListener("click", () => $("#p-plages tbody").append(lignePlage()));
 $("#p-ajout-impl").addEventListener("click", () => $("#p-implantations tbody").append(ligneImpl()));
 $("#p-multi-impl").addEventListener("change", (e) => { $("#p-impl-details").hidden = !e.target.checked; });
@@ -333,7 +362,6 @@ function remplirParams(p) {
   for (const j of JOURS) jours.append(h("label", { classe: "case-a-cocher" }, h("input", { type: "checkbox", value: j, coche: cal.jours_cours.includes(j) }), JLONG[j]));
   $("#p-conges").checked = !!cal.cours_pendant_conges;
   const tf = vider($("#p-fermetures tbody"));
-  for (const f of cal.fermetures) { const l = ligneFermeture(f); l.querySelector("select").value = f.type || "ferie"; tf.append(l); }
   const tp = vider($("#p-plages tbody"));
   for (const c of cal.creneaux) tp.append(lignePlage(c));
   const blocs = vider($("#p-blocs"));
@@ -343,6 +371,7 @@ function remplirParams(p) {
   const ti = vider($("#p-implantations tbody"));
   for (const i of et.implantations) ti.append(ligneImpl(i));
   if (!et.implantations.length) { ti.append(ligneImpl()); ti.append(ligneImpl()); }
+  for (const f of cal.fermetures) tf.append(ligneFermeture(f));
   $("#p-multi-sites").checked = et.multi_sites_meme_jour;
   $("#p-delai").value = et.delai_deplacement_min;
   $("#p-delai-l").hidden = !et.multi_sites_meme_jour;
@@ -357,22 +386,31 @@ function codeDepuis(nom, pris) {
   pris.add(c);
   return c;
 }
-function lireParams() {
+function lirePlages() {
   const pris = new Set();
-  const plages = $$("#p-plages tbody tr").map((tr) => {
+  return $$("#p-plages tbody tr").map((tr) => {
     const [nom, deb, fin, per] = $$("input", tr).map((i) => i.value.trim());
     const jour = $("select", tr).value;
     const id = tr.dataset.id || codeDepuis(nom, pris);
     pris.add(id);
     return { id, libelle: nom, heure_debut: deb, heure_fin: fin, periodes: +per || 1, jours: jour ? jour.split(",") : [] };
   });
+}
+function lireImplantations() {
+  return $$("#p-implantations tbody tr").map((tr) => {
+    const [id, nom, adresse] = $$("input", tr).map((i) => i.value.trim());
+    return { id, nom, adresse };
+  }).filter((i) => i.id);
+}
+function lireParams() {
+  const plages = lirePlages();
   const fermetures = $$("#p-fermetures tbody tr").map((tr) => {
     const [d, f, motif] = $$("input", tr).map((i) => i.value.trim());
-    return { date_debut: d, date_fin: f || d, motif, type: $("select", tr).value };
+    const [type, moment, site] = $$("select", tr).map((x) => x.value);
+    return { date_debut: d, date_fin: f || d, motif, type,
+      creneaux: moment ? moment.split(",") : [], implantations: site ? site.split(",") : [] };
   }).filter((f) => f.date_debut);
-  const implantations = $("#p-multi-impl").checked
-    ? $$("#p-implantations tbody tr").map((tr) => { const [id, nom, adresse] = $$("input", tr).map((i) => i.value.trim()); return { id, nom, adresse }; }).filter((i) => i.id)
-    : [];
+  const implantations = $("#p-multi-impl").checked ? lireImplantations() : [];
   const anc = etat.modeParams === "parametres" ? etat.jeu.donnees : parametresParDefaut();
   return {
     nom: $("#p-nom").value.trim() || "Mon établissement",
@@ -846,8 +884,31 @@ function seancesFiltrees() {
   if (par === "jour") return s;
   return s.filter((x) => (par === "enseignant" ? x.enseignants.includes(id) : x[par] === id));
 }
-function fermeture(cal, date) {
-  return cal.fermetures.find((f) => dans(f, date) && ((f.type || "ferie") === "ferie" || !cal.cours_pendant_conges));
+// implantation de ce qui est affiché (groupe ou local) ; inconnue pour un enseignant ou la vue « jour »
+function implantationVue(d) {
+  const { par, entite } = etat.vue;
+  if (par === "groupe") return d.groupes.find((g) => g.id === entite)?.implantation || null;
+  if (par === "local") return d.locaux.find((l) => l.id === entite)?.implantation || null;
+  return null;
+}
+const fermeturesDuJour = (cal, date) => cal.fermetures.filter((f) => dans(f, date) && ((f.type || "ferie") !== "conges" || !cal.cours_pendant_conges));
+const concerneSite = (f, impl) => !f.implantations?.length || (!!impl && f.implantations.includes(impl));
+// fermeture de toute la journée pour ce qui est affiché
+function fermeture(cal, date, d) {
+  const impl = d ? implantationVue(d) : null;
+  return fermeturesDuJour(cal, date).find((f) => !f.creneaux?.length && concerneSite(f, impl));
+}
+// fermetures qui ne touchent qu'un moment de la journée, ou un site quand l'implantation affichée est inconnue
+function fermeturesPartielles(cal, date, d) {
+  const impl = implantationVue(d);
+  return fermeturesDuJour(cal, date).filter((f) => (f.creneaux?.length || f.implantations?.length)
+    && !(!f.creneaux?.length && concerneSite(f, impl)) && (concerneSite(f, impl) || !impl));
+}
+function libelleFermeture(f, d) {
+  const plages = (f.creneaux || []).map((c) => (d.calendrier.creneaux.find((x) => x.id === c)?.libelle || c).toLowerCase());
+  const sites = (f.implantations || []).map((i) => d.etablissement.implantations.find((x) => x.id === i)?.nom || i);
+  const portee = [plages.join(" + "), sites.join(", ")].filter(Boolean).join(", ");
+  return (f.motif || TYPES_FERMETURE[f.type || "ferie"]) + (portee ? ` (${portee})` : "");
 }
 function stageGroupe(d, date) {
   if (etat.vue.par !== "groupe") return null;
@@ -907,7 +968,14 @@ function rendreGrilleTemps(zone, d, dates, seances, titre) {
   g.style.gridTemplateRows = `auto repeat(${lignes.length}, minmax(1.9rem, auto))`;
   const place = (el, col, l0, l1) => { el.style.gridColumn = String(col); el.style.gridRow = `${l0 + 2} / ${l1 + 3}`; return el; };
   g.append(h("div", { classe: "case entete-case coin" }));
-  dates.forEach((dt, i) => { const c = h("div", { classe: "case entete-case" }, JLONG[jourDe(dt)], h("small", {}, fmtCourt(dt))); c.style.gridColumn = String(i + 2); c.style.gridRow = "1"; g.append(c); });
+  const implVue = implantationVue(d);
+  dates.forEach((dt, i) => {
+    // fermetures d'un site dont l'implantation affichée est inconnue : simple mention dans l'en-tête
+    const mentions = fermeturesPartielles(cal, dt, d).filter((f) => !f.creneaux?.length || !concerneSite(f, implVue));
+    const c = h("div", { classe: "case entete-case" }, JLONG[jourDe(dt)], h("small", {}, fmtCourt(dt)),
+      mentions.map((f) => h("div", { classe: "marque ferme" }, libelleFermeture(f, d))));
+    c.style.gridColumn = String(i + 2); c.style.gridRow = "1"; g.append(c);
+  });
   lignes.forEach((p, i) => {
     const nouvellePlage = i === 0 || lignes[i - 1].plage !== p.plage;
     g.append(place(h("div", { classe: "case entete-ligne" + (nouvellePlage ? " debut-plage" : "") }, nouvellePlage ? h("b", {}, p.libelle) : null, h("small", {}, p.debut)), 1, i, i));
@@ -915,8 +983,16 @@ function rendreGrilleTemps(zone, d, dates, seances, titre) {
   dates.forEach((dt, i) => {
     const col = i + 2, periodesJour = struct[jourDe(dt)] || [];
     lignes.forEach((p, k) => g.append(place(h("div", { classe: "case" + (periodesJour.some((q) => q.debut === p.debut) ? "" : " vide") + (lignes[k - 1]?.plage !== p.plage ? " debut-plage" : "") }), col, k, k)));
-    const hors = dt < cal.date_debut || dt > cal.date_fin, f = fermeture(cal, dt), stg = stageGroupe(d, dt);
-    if (hors || f || stg) g.append(place(h("div", { classe: "voile " + (hors ? "hors" : f ? "ferme" : "stage") }, hors ? "" : (f ? f.motif || "Fermé" : stg.motif || "Stage")), col, 0, lignes.length - 1));
+    const hors = dt < cal.date_debut || dt > cal.date_fin, f = fermeture(cal, dt, d), stg = stageGroupe(d, dt);
+    if (hors || f || stg) g.append(place(h("div", { classe: "voile " + (hors ? "hors" : f ? "ferme" : "stage") }, hors ? "" : (f ? libelleFermeture(f, d) : stg.motif || "Stage")), col, 0, lignes.length - 1));
+    else {
+      for (const fp of fermeturesPartielles(cal, dt, d).filter((x) => x.creneaux?.length && concerneSite(x, implVue))) {
+        for (const c of fp.creneaux) {
+          const rangs = lignes.map((p, k) => (p.plage === c && periodesJour.some((q) => q.debut === p.debut) ? k : -1)).filter((k) => k >= 0);
+          if (rangs.length) g.append(place(h("div", { classe: "voile ferme" }, libelleFermeture(fp, d)), col, rangs[0], rangs.at(-1)));
+        }
+      }
+    }
     for (const s of seances.filter((x) => x.date === dt)) {
       const per = struct[s.jour] || [];
       const l0 = rangLigne[per[s.debut_periode]?.debut ?? s.heure_debut], l1 = rangLigne[per[s.debut_periode + s.periodes - 1]?.debut];
@@ -935,8 +1011,9 @@ function rendreJourTousGroupes(zone, d, date) {
     etat.vue.date = date = x; $("#nav-date").value = date;
   }
   $("#titre-periode").textContent = `${fmtLong(date)} — tous les groupes`;
-  const f = fermeture(cal, date);
-  if (f) zone.append(h("p", { classe: "voile-texte" }, `Fermé : ${f.motif || "fermeture"}`));
+  const f = fermeture(cal, date, d);
+  if (f) zone.append(h("p", { classe: "voile-texte" }, `Pas de cours : ${libelleFermeture(f, d)}`));
+  for (const fp of fermeturesPartielles(cal, date, d)) zone.append(h("p", { classe: "voile-texte" }, `Pas de cours : ${libelleFermeture(fp, d)}`));
   const per = structureJours()[jourDe(date)] || [];
   const seances = etat.horaire.contenu.seances.filter((s) => s.date === date);
   const groupes = d.groupes.filter((g) => seances.some((s) => s.groupe === g.id));
@@ -975,11 +1052,12 @@ function rendreMois(zone, d, date, seances) {
   for (let x = lundi(debut); x <= finGrille; x = plusJ(x, 1)) {
     if (jours.includes(jourDe(x))) {
       const dt = x, dansMois = dt.slice(0, 7) === mois;
-      const f = fermeture(cal, dt), stg = stageGroupe(d, dt);
+      const f = fermeture(cal, dt, d), stg = stageGroupe(d, dt), partielles = f ? [] : fermeturesPartielles(cal, dt, d);
       const liste = seances.filter((s) => s.date === dt);
       const cas = h("div", { classe: "case jour-mois" + (dansMois ? "" : " autre-mois") + (dt < cal.date_debut || dt > cal.date_fin ? " hors" : "") },
         h("button", { type: "button", classe: "num-jour", title: "Voir la journée", onclick: () => { etat.vue.date = dt; choisirEchelle("jour"); } }, String(+dt.slice(8))),
-        f ? h("div", { classe: "marque ferme" }, f.motif || "Fermé") : null, stg ? h("div", { classe: "marque stage" }, stg.motif || "Stage") : null,
+        f ? h("div", { classe: "marque ferme" }, libelleFermeture(f, d)) : null,
+        partielles.map((x) => h("div", { classe: "marque ferme" }, libelleFermeture(x, d))), stg ? h("div", { classe: "marque stage" }, stg.motif || "Stage") : null,
         liste.slice(0, 4).map((s) => carteSeance(s, true)),
         liste.length > 4 ? h("button", { type: "button", classe: "lien-plus", onclick: () => { etat.vue.date = dt; choisirEchelle("jour"); } }, `+ ${liste.length - 4} autres`) : null);
       g.append(cas);
@@ -1010,11 +1088,11 @@ function rendreAnnee(zone, d, debut, fin, seances, titre) {
     for (let j = 1; j <= 31; j++) {
       if (j > nbJours) { tr.append(h("td", { classe: "inexistant" })); continue; }
       const dt = `${m.slice(0, 8)}${String(j).padStart(2, "0")}`;
-      const liste = parDate[dt] || [], f = fermeture(cal, dt), stg = stageGroupe(d, dt);
+      const liste = parDate[dt] || [], f = fermeture(cal, dt, d), stg = stageGroupe(d, dt), fp = f ? [] : fermeturesPartielles(cal, dt, d);
       const per = liste.reduce((s, x) => s + x.periodes, 0);
       total += per;
-      const td = h("td", { classe: [jourDe(dt) === "sam" || jourDe(dt) === "dim" ? "weekend" : "", dt < cal.date_debut || dt > cal.date_fin ? "hors" : "", f ? "ferme" : "", stg ? "stage" : ""].join(" ").trim() || null,
-        title: `${fmtLong(dt)}${f ? ` — ${f.motif || "fermé"}` : ""}${stg ? ` — ${stg.motif || "stage"}` : ""}${liste.length ? "\n" + liste.map((s) => `${s.heure_debut} ${s.cours_nom} (${s.groupe}, ${s.distanciel ? "à distance" : s.local})`).join("\n") : ""}` });
+      const td = h("td", { classe: [jourDe(dt) === "sam" || jourDe(dt) === "dim" ? "weekend" : "", dt < cal.date_debut || dt > cal.date_fin ? "hors" : "", f ? "ferme" : fp.length ? "partiel" : "", stg ? "stage" : ""].join(" ").trim() || null,
+        title: `${fmtLong(dt)}${f ? ` — ${libelleFermeture(f, d)}` : ""}${fp.map((x) => ` — ${libelleFermeture(x, d)}`).join("")}${stg ? ` — ${stg.motif || "stage"}` : ""}${liste.length ? "\n" + liste.map((s) => `${s.heure_debut} ${s.cours_nom} (${s.groupe}, ${s.distanciel ? "à distance" : s.local})`).join("\n") : ""}` });
       if (liste.length) {
         const b = h("button", { type: "button", classe: "pastille-jour", "aria-label": `${fmtLong(dt)} : ${liste.length} séance(s)`, onclick: () => { etat.vue.date = dt; choisirEchelle("jour"); } },
           liste.length > 1 ? String(liste.length) : "");

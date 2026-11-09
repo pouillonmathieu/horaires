@@ -99,7 +99,7 @@ les identifiants.
 | `parametres.csv` | `cle;valeur` : `date_debut`, `date_fin` (année scolaire), `jours_cours` (ex. `lun\|mar\|mer\|jeu\|ven\|sam`), `cours_pendant_conges` (oui/non), `rythme_defaut`, `bloc_defaut`, `multi_sites_meme_jour` (oui/non), `delai_deplacement_min`, `enseignants_toutes_implantations` (oui/non), `max_periodes_semaine_defaut` |
 | `implantations.csv` | `id;nom;adresse` : sites de l'établissement (inutile s'il n'y en a qu'un) |
 | `creneaux.csv` | plages horaires : `id;libelle;heure_debut;heure_fin;periodes;jours` (ex. `soir;Soir;18:00;21:20;4;` ou `sam;Samedi;08:00;12:10;5;sam`) |
-| `fermetures.csv` | `date_debut;date_fin;motif;type` : `type` = `ferie` (toujours fermé) ou `conges` (congé scolaire) |
+| `fermetures.csv` | `date_debut;date_fin;motif;type;creneaux;implantations` : `type` = `ferie` (toujours fermé), `conges` (congé scolaire) ou `special` (jour spécial : formation continue, fête de l'école…, fermé même si `cours_pendant_conges` = oui). `creneaux` (ex. `aprem\|soir`) et `implantations` (ex. `CENTRE`) limitent la fermeture à ces plages ou à ces sites ; vides = toute la journée, partout. Ces deux colonnes sont facultatives. |
 | `locaux.csv` | `id;nom;implantation;capacite;equipements` |
 | `ressources.csv` | `id;nom;quantite` : matériel mobile partagé |
 | `enseignants.csv` (colonnes en plus) | `disponibilites` (ex. `lun:soir\|mer:*`), `max_periodes_semaine`, `implantations`, `date_debut` (engagement), `date_fin` (fin de contrat, pension) |

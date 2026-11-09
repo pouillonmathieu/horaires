@@ -39,8 +39,11 @@ EXEMPLE = {
         "fermetures": [
             {"date_debut": "2027-02-15", "date_fin": "2027-02-26", "motif": "Vacances de détente", "type": "conges"},
             {"date_debut": "2027-03-29", "date_fin": "2027-03-29", "motif": "Lundi de Pâques", "type": "ferie"},
+            {"date_debut": "2027-03-12", "date_fin": "2027-03-12", "motif": "Journée de formation continue", "type": "special"},
             {"date_debut": "2027-04-26", "date_fin": "2027-05-07", "motif": "Vacances de printemps", "type": "conges"},
             {"date_debut": "2027-05-17", "date_fin": "2027-05-17", "motif": "Lundi de Pentecôte", "type": "ferie"},
+            {"date_debut": "2027-06-11", "date_fin": "2027-06-11", "motif": "Fête de l'école", "type": "special",
+             "creneaux": ["aprem", "soir"], "implantations": ["CENTRE"]},
         ],
     },
     "locaux": [

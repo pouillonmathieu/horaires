@@ -191,6 +191,7 @@ tr.distanciel td { color: var(--accent); }
 .annee td.inexistant { background: #f4f5f7; border-color: #f4f5f7; }
 .annee td.weekend { background: #f8f9fb; }
 .annee td.ferme { background: var(--gris-ferme); }
+.annee td.partiel { background: linear-gradient(135deg, var(--gris-ferme) 50%, transparent 50%); }
 .annee td.stage { background: var(--orange-clair); }
 .annee td.hors { background: repeating-linear-gradient(45deg, #fafbfc, #fafbfc 4px, #eef0f3 4px, #eef0f3 8px); }
 .annee td.total, .annee tfoot th { width: 3rem; font-weight: 700; padding: 0 .4rem; }
@@ -206,3 +207,5 @@ dialog::backdrop { background: rgba(20, 30, 45, .45); }
   .entete { padding: .5rem .8rem; }
   .jeu-courant select { max-width: 10rem; }
 }
+
+.aide { font-size: .85rem; margin: .1rem 0 .4rem; max-width: 75ch; }
