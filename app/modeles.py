@@ -193,13 +193,40 @@ class Etablissement(Strict):
         return _bloc_valide(v)
 
 
+def _valider_disponibilites(v: list[str]) -> list[str]:
+    out = []
+    for motif in v:
+        m = re.fullmatch(r"\s*([a-zA-Z]{3})[a-zA-Z]*\s*:\s*([^;,|:<>\"'`\\\x00-\x1f]{1,64}?)\s*", motif)
+        if not m:
+            raise ValueError(f"disponibilité « {motif} » invalide (format jour:creneau, ex. lun:soir ou mar:*)")
+        out.append(f"{_jours_valides([m.group(1)])[0]}:{m.group(2)}")
+    return out
+
+
+def disponible_hebdo(disponibilites: list[str], jour: str, creneau_id: str) -> bool:
+    """Disponibilité hebdomadaire « jour:plage » (liste vide = toujours disponible)."""
+    return not disponibilites or f"{jour}:{creneau_id}" in disponibilites or f"{jour}:*" in disponibilites
+
+
 class Local(Strict):
     id: Id
     nom: Texte = ""
     implantation: Id | None = None
     capacite: int = Field(ge=1, le=10000)
     equipements: list[Id] = Field(default_factory=list)
+    disponibilites: list[str] = Field(
+        default_factory=list,
+        description="jours et plages où le local peut être utilisé (« lun:soir », « mar:* ») ; vide = toujours",
+    )
     indisponibilites: list[Indisponibilite] = Field(default_factory=list)
+
+    @field_validator("disponibilites")
+    @classmethod
+    def _dispos(cls, v: list[str]) -> list[str]:
+        return _valider_disponibilites(v)
+
+    def ouvert(self, jour: str, creneau_id: str) -> bool:
+        return disponible_hebdo(self.disponibilites, jour, creneau_id)
 
 
 class Ressource(Strict):
@@ -225,13 +252,7 @@ class Enseignant(Strict):
     @field_validator("disponibilites")
     @classmethod
     def _dispos(cls, v: list[str]) -> list[str]:
-        out = []
-        for motif in v:
-            m = re.fullmatch(r"\s*([a-zA-Z]{3})[a-zA-Z]*\s*:\s*([^;,|:<>\"'`\\\x00-\x1f]{1,64}?)\s*", motif)
-            if not m:
-                raise ValueError(f"disponibilité « {motif} » invalide (format jour:creneau, ex. lun:soir ou mar:*)")
-            out.append(f"{_jours_valides([m.group(1)])[0]}:{m.group(2)}")
-        return out
+        return _valider_disponibilites(v)
 
     def sous_contrat(self, d: date) -> bool:
         return (not self.date_debut or d >= self.date_debut) and (not self.date_fin or d <= self.date_fin)
@@ -379,6 +400,10 @@ class JeuDeDonnees(Strict):
             for i in e.indisponibilites:
                 erreurs += [f"enseignant {e.id} : créneau inconnu « {c} »" for c in i.creneaux if c not in creneaux]
         for l in self.locaux:
+            for d in l.disponibilites:
+                c = d.split(":")[1]
+                if c != "*" and c not in creneaux:
+                    erreurs.append(f"local {l.id} : créneau inconnu « {c} » dans les disponibilités")
             for i in l.indisponibilites:
                 erreurs += [f"local {l.id} : créneau inconnu « {c} »" for c in i.creneaux if c not in creneaux]
 

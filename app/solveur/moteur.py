@@ -225,6 +225,9 @@ class Horizon:
         # fermetures limitées à certains créneaux ou implantations (jours spéciaux, fermeture d'un site…)
         self._partielles = [f for f in cal.fermetures_actives() if f.partielle]
         self._cache_partiel: dict = {}
+        self.locaux = {l.id: l for l in ds.locaux}
+        self._cache_eligibles: dict = {}
+        self._cache_locaux_ouverts: dict = {}
 
     # -- blocs possibles
     def positions(self, jour_idx: int, bloc: str, sans_chevauchement: bool = False) -> list[tuple[int, int]]:
@@ -323,9 +326,28 @@ class Horizon:
                 for t, ok in enumerate(base)]
         return self._cache_partiel[cle]
 
-    def dispo_unite(self, u: Unite, ch: CreneauHebdo, avec_enseignants: bool = True) -> list[int] | None:
+    def locaux_ouverts(self, E: frozenset, ch: CreneauHebdo) -> frozenset:
+        """Locaux de E disponibles chaque semaine à ce créneau (disponibilités jour × plage du local)."""
+        cle = (E, ch.jour, ch.plages)
+        if cle not in self._cache_locaux_ouverts:
+            self._cache_locaux_ouverts[cle] = frozenset(
+                r for r in E if all(self.locaux[r].ouvert(ch.jour, p) for p in ch.plages))
+        return self._cache_locaux_ouverts[cle]
+
+    def un_local_ouvert(self, u: Unite, ch: CreneauHebdo) -> bool:
+        if u.distanciel:
+            return True
+        cle = (u.groupe.id, u.cours.id, u.implantation)
+        if cle not in self._cache_eligibles:
+            self._cache_eligibles[cle] = eligibles_unite(self.ds, u)
+        return bool(self.locaux_ouverts(self._cache_eligibles[cle], ch))
+
+    def dispo_unite(self, u: Unite, ch: CreneauHebdo, avec_enseignants: bool = True,
+                    avec_locaux: bool = True) -> list[int] | None:
         """Semaines où l'unité peut avoir séance à ce créneau hebdomadaire (None = créneau exclu)."""
         if not self.groupe_autorise(u.groupe, ch):
+            return None
+        if avec_locaux and not self.un_local_ouvert(u, ch):
             return None
         if not avec_enseignants:
             return self.base_unite(u, ch)
@@ -570,12 +592,13 @@ def planifier(ds: JeuDeDonnees, params: Parametres | None = None) -> Resultat:
                 par_periode[(v.ch.jour_idx, r)].append(v)
     nb_hall, vus = 0, set()
     for (j, r), vs in par_periode.items():
-        ensembles = {eligibles[v.u.idx] for v in vs}
-        ensembles.add(frozenset().union(*ensembles))
         ch_ref = hz.creneau(j, r, 1)
+        ouverts = {v.u.idx: hz.locaux_ouverts(eligibles[v.u.idx], ch_ref) for v in vs}
+        ensembles = set(ouverts.values())
+        ensembles.add(frozenset().union(*ensembles))
         bloques = {l: hz.local_bloque(locaux_par_id[l], ch_ref) for l in frozenset().union(*ensembles)}
         for E in ensembles:
-            ivs = [v.intervalle for v in vs if eligibles[v.u.idx] <= E]
+            ivs = [v.intervalle for v in vs if ouverts[v.u.idx] <= E]
             cle = (E, frozenset(iv.Index() for iv in ivs))
             if cle in vus:
                 continue
@@ -873,7 +896,7 @@ def _attribuer_locaux(hz: Horizon, ds: JeuDeDonnees, places: list[_Place], eligi
         non_aff = []
         for k, p in enumerate(ps):
             lits = []
-            for r in eligibles[p.u.idx]:
+            for r in hz.locaux_ouverts(eligibles[p.u.idx], p.ch):
                 if bloques.get((r, k)) and bloques[(r, k)] & set(p.semaines):
                     continue
                 b = mdl.NewBoolVar("")
@@ -919,7 +942,7 @@ def _attribuer_locaux(hz: Horizon, ds: JeuDeDonnees, places: list[_Place], eligi
             if p.local:
                 continue
             for t in p.semaines:
-                choix = next((r for r in sorted(eligibles[p.u.idx], key=lambda r: locaux[r].capacite)
+                choix = next((r for r in sorted(hz.locaux_ouverts(eligibles[p.u.idx], p.ch), key=lambda r: locaux[r].capacite)
                               if all(r not in utilises[(rang, t)] for rang in p.ch.rangs)
                               and t not in bloques.get((r, k), ())), None)
                 p.locaux_par_semaine[t] = choix

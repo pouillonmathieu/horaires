@@ -49,7 +49,8 @@ EXEMPLE = {
     "locaux": [
         {"id": "A101", "nom": "Salle A101", "implantation": "CENTRE", "capacite": 24, "equipements": ["projecteur"]},
         {"id": "A102", "nom": "Salle A102", "implantation": "CENTRE", "capacite": 16, "equipements": ["projecteur"]},
-        {"id": "INFO1", "nom": "Labo informatique", "implantation": "NORD", "capacite": 20, "equipements": ["pc", "projecteur"]},
+        {"id": "INFO1", "nom": "Labo informatique", "implantation": "NORD", "capacite": 20, "equipements": ["pc", "projecteur"],
+         "disponibilites": ["lun:*", "mar:*", "mer:*", "jeu:*"]},  # prêté à une autre école le vendredi
         {"id": "SOINS", "nom": "Salle de soins", "implantation": "CENTRE", "capacite": 14, "equipements": ["lit_medicalise"],
          "indisponibilites": [{"date_debut": "2027-06-14", "date_fin": "2027-06-25", "motif": "Travaux"}]},
     ],

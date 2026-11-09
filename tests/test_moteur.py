@@ -71,6 +71,7 @@ def verifier_coherence(ds: JeuDeDonnees, r: dict):
         assert not c.locaux or l.id in c.locaux
         assert s["implantation"] is None or l.implantation in (None, s["implantation"]), "local hors implantation"
         assert not any(i.bloque(d, p) for i in l.indisponibilites for p in plages)
+        assert all(l.ouvert(JOURS[d.weekday()], p) for p in plages), f"local {l.id} pas disponible le {d} ({plages})"
         for e in s["enseignants"]:
             assert not s["implantation"] or not ens[e].implantations or s["implantation"] in ens[e].implantations
     doublons = [k for k, n in occupe.items() if n > 1]
@@ -372,6 +373,23 @@ def test_jours_speciaux():
         petit_jeu(**{"calendrier.fermetures": [{"date_debut": "2027-01-05", "date_fin": "2027-01-05", "creneaux": ["nuit"]}]})
     with pytest.raises(ValueError, match="implantation inconnue"):
         petit_jeu(**{"calendrier.fermetures": [{"date_debut": "2027-01-05", "date_fin": "2027-01-05", "implantations": ["Z"]}]})
+
+
+def test_disponibilites_des_locaux():
+    # LX n'est disponible que le lundi : le groupe GA (site X) n'a cours que le lundi
+    ds = petit_jeu(**{"locaux.0.disponibilites": ["lun:*"]})
+    r = _planifier(ds)  # verifier_coherence contrôle la disponibilité de chaque local utilisé
+    assert sum(l["periodes_manquantes"] for l in r["synthese"]) == 0
+    assert {s["jour"] for s in r["seances"] if s["groupe"] == "GA"} == {"lun"}
+    # LY n'est disponible que le mardi matin, or GB n'a cours que l'après-midi : le diagnostic l'explique
+    ds = petit_jeu(**{"locaux.1.disponibilites": ["mar:matin"]})
+    msg = [d for d in avant_planification(ds) if d["sujet"].startswith("GB")]
+    assert msg and "locaux compatibles" in msg[0]["message"] and "LY" in msg[0]["suggestion"]
+    r = planifier(ds, Parametres(duree_max_s=10)).en_dict()
+    verifier_coherence(ds, r)
+    assert {l["cours"]: l["periodes_manquantes"] for l in r["synthese"]} == {"CA": 0, "CB": 16}
+    with pytest.raises(ValueError, match="créneau inconnu"):
+        petit_jeu(**{"locaux.0.disponibilites": ["lun:nuit"]})
 
 
 def test_plage_du_samedi():

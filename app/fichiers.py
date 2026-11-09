@@ -27,7 +27,7 @@ ONGLETS: dict[str, list[str]] = {
     "Implantations": ["id", "nom", "adresse"],
     "Creneaux": ["id", "libelle", "heure_debut", "heure_fin", "periodes", "jours"],
     "Fermetures": ["date_debut", "date_fin", "motif", "type", "creneaux", "implantations"],
-    "Locaux": ["id", "nom", "implantation", "capacite", "equipements"],
+    "Locaux": ["id", "nom", "implantation", "capacite", "equipements", "disponibilites"],
     "Ressources": ["id", "nom", "quantite"],
     "Enseignants": ["id", "nom", "disponibilites", "max_periodes_semaine", "implantations", "date_debut", "date_fin"],
     "Indisponibilites": ["type", "id", "date_debut", "date_fin", "creneaux", "motif"],
@@ -54,7 +54,8 @@ AIDE = {
     "Fermetures": "type : ferie (toujours fermé), conges (congé scolaire, ouvert si cours_pendant_conges = oui) ou "
                   "special (jour spécial : formation continue, fête de l'école…). creneaux : seulement ces plages "
                   "(ex. aprem) ; implantations : seulement ces sites. Vide = toute la journée, tous les sites.",
-    "Locaux": "Implantation, capacité en places assises, équipements fixes séparés par « ; » (ex. pc;projecteur).",
+    "Locaux": "Implantation, capacité en places assises, équipements fixes séparés par « ; » (ex. pc;projecteur). "
+              "Disponibilités : jour:plage séparés par « ; » (ex. lun:*;mar:matin), vide = toujours disponible.",
     "Ressources": "Matériel mobile partagé, en nombre d'unités (1 unité mobilisée par séance).",
     "Enseignants": "Disponibilités : jour:plage séparés par « ; » (ex. lun:soir;mer:*), vide = toujours. Implantations "
                    "où il enseigne (vide = selon le paramètre). date_debut / date_fin : engagement et fin de contrat.",
@@ -358,6 +359,7 @@ def tables_vers_donnees(lire: Callable[[str], list[dict]], nom_defaut: str,
                 {"id": _texte(obligatoire(r, "id", "Locaux")), "nom": _texte(r.get("nom")),
                  "implantation": _texte(r.get("implantation")) or None,
                  "capacite": _entier(obligatoire(r, "capacite", "Locaux")), "equipements": _liste(r.get("equipements")),
+                 "disponibilites": _liste(r.get("disponibilites")),
                  "indisponibilites": indispos["local"].get(_texte(r["id"]), [])}
                 for r in lire("Locaux")
             ],
@@ -507,7 +509,7 @@ def donnees_vers_tables(ds: JeuDeDonnees) -> dict[str, list[list]]:
         "Creneaux": [[c.id, c.libelle, c.heure_debut, c.heure_fin, c.periodes, _j(c.jours)] for c in cal.creneaux],
         "Fermetures": [[f.date_debut, f.date_fin, f.motif, f.type, _j(f.creneaux), _j(f.implantations)]
                        for f in cal.fermetures],
-        "Locaux": [[l.id, l.nom, l.implantation, l.capacite, _j(l.equipements)] for l in ds.locaux],
+        "Locaux": [[l.id, l.nom, l.implantation, l.capacite, _j(l.equipements), _j(l.disponibilites)] for l in ds.locaux],
         "Ressources": [[r.id, r.nom, r.quantite] for r in ds.ressources],
         "Enseignants": [[e.id, e.nom, _j(e.disponibilites), e.max_periodes_semaine, _j(e.implantations), e.date_debut,
                          e.date_fin] for e in ds.enseignants],

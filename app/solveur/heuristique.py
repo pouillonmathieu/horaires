@@ -10,7 +10,7 @@ from collections import defaultdict
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING
 
-from ..modeles import JeuDeDonnees
+from ..modeles import JOURS, JeuDeDonnees
 
 if TYPE_CHECKING:
     from .moteur import Horizon, Unite
@@ -44,7 +44,10 @@ def construire(hz: Horizon, ds: JeuDeDonnees, unites: list[Unite], eligibles: di
     for l in ds.locaux:
         for j in hz.jours:
             for pj in hz.journee[j]:
-                occ_local[(l.id, j, pj.rang)].update(hz.local_bloque(l, hz.creneau(j, pj.rang, 1)))
+                if l.ouvert(JOURS[j], pj.plage.id):
+                    occ_local[(l.id, j, pj.rang)].update(hz.local_bloque(l, hz.creneau(j, pj.rang, 1)))
+                else:  # local jamais disponible à cette plage ce jour-là
+                    occ_local[(l.id, j, pj.rang)].update(range(hz.T))
 
     fin_module: dict[tuple[str, str], int] = {}  # rang de la dernière séance
     solution: dict = {}

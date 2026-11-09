@@ -26,6 +26,7 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 | Locaux imposés pour un cours | `Cours.locaux` |
 | Taille du groupe et capacité des locaux | `Groupes.effectif`, `Locaux.capacite` |
 | Disponibilités et indisponibilités des enseignants | `Enseignants.disponibilites`, `Indisponibilites` |
+| Jours et plages où chaque local est disponible (ex. labo prêté le vendredi) | `Locaux.disponibilites` |
 | Indisponibilités des locaux (travaux, examens…) | `Indisponibilites` (type `local`) |
 | Équipement fixe d'un local (PC, lit médicalisé…) | `Locaux.equipements`, `Cours.equipements` |
 | Matériel mobile en quantité limitée | `Ressources`, `Cours.ressources` |
@@ -195,7 +196,7 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 34 tests couvrent le moteur, les imports et la sécurité :
+Les 35 tests couvrent le moteur, les imports et la sécurité :
 - **moteur** :
   - aucune double réservation (groupe, local, enseignant), période par période ;
   - respect de chaque contrainte : prérequis, co-enseignement, répartition entre enseignants,

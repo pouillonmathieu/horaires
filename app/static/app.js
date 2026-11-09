@@ -31,6 +31,8 @@ function h(tag, attrs = {}, ...enfants) {
   return el;
 }
 const vider = (el) => { el.replaceChildren(); return el; };
+// comme append, en ignorant les éléments facultatifs absents (null, false…)
+const ajouter = (el, ...xs) => el.append(...xs.flat().filter((x) => x !== null && x !== undefined && x !== false));
 const cloner = (o) => JSON.parse(JSON.stringify(o));
 
 // ------------------------------------------------------------------ dates
@@ -505,10 +507,10 @@ function afficherEntites() {
         (g.jours_cours.length ? g.jours_cours : d.calendrier.jours_cours).join(", "), g.creneaux.length ? g.creneaux.join(", ") : "toutes", g.modules.length]);
     }
   } else {
-    entetes(["Local", "Code", "Implantation", "Capacité", "Équipements"]);
+    entetes(["Local", "Code", "Implantation", "Capacité", "Équipements", "Disponible"]);
     for (const l of d.locaux) {
       if (!garde(l.id, l.nom, l.equipements.join(" "))) continue;
-      ligne("local", l.id, [h("b", {}, l.nom || l.id), l.id, implNom(d, l.implantation), l.capacite, l.equipements.join(", ") || "–"]);
+      ligne("local", l.id, [h("b", {}, l.nom || l.id), l.id, implNom(d, l.implantation), l.capacite, l.equipements.join(", ") || "–", resumeDispo(d, l.disponibilites)]);
     }
   }
   if (!corps.children.length) corps.append(h("tr", {}, h("td", { colspan: 7, classe: "discret" }, q ? "Aucun résultat." : "Rien pour l'instant : importez vos données.")));
@@ -546,7 +548,7 @@ function ouvrirFiche(type, id) {
     const c = m.cours.find((x) => x.id === id);
     $("#fiche-titre").textContent = c.nom || c.id;
     const impl = d.etablissement.implantations;
-    form.append(
+    ajouter(form,
       h("p", { classe: "discret" }, `Module : ${m.nom || m.id}${m.prerequis.length ? ` · prérequis : ${m.prerequis.join(", ")}` : ""}`),
       h("div", { classe: "grille-champs" },
         champ("Nom", entree("f-nom", c.nom)),
@@ -596,13 +598,8 @@ function ouvrirFiche(type, id) {
     $("#fiche-titre").textContent = e.nom || e.id;
     const attrs = attributionsEnseignant(d, id);
     const total = attrs.reduce((s, x) => s + x.attribution.periodes * Math.max(1, x.groupes.length), 0);
-    const plages = d.calendrier.creneaux;
-    const toujours = !e.disponibilites.length;
-    const grille = h("table", { classe: "tableau compact dispo" }, h("thead", {}, h("tr", {}, h("th", {}), plages.map((p) => h("th", {}, p.libelle || p.id)))),
-      h("tbody", {}, d.calendrier.jours_cours.map((j) => h("tr", {}, h("th", {}, JLONG[j]), plages.map((p) => h("td", {},
-        p.jours.length && !p.jours.includes(j) ? "–" : h("input", { type: "checkbox", name: "f-dispo", value: `${j}:${p.id}`, "aria-label": `${JLONG[j]} ${p.libelle || p.id}`,
-          coche: toujours || e.disponibilites.includes(`${j}:${p.id}`) || e.disponibilites.includes(`${j}:*`) })))))));
-    form.append(
+    const grille = grilleDispo(d, e.disponibilites);
+    ajouter(form,
       h("p", { classe: "discret" }, `Code ${e.id} · ${total} périodes attribuées sur l'année`),
       h("div", { classe: "grille-champs" },
         champ("Nom", entree("f-nom", e.nom)),
@@ -629,14 +626,13 @@ function ouvrirFiche(type, id) {
       ee.date_debut = $("#f-debut", form).value || null;
       ee.date_fin = $("#f-fin", form).value || null;
       if (d.etablissement.implantations.length) ee.implantations = coches(form, "f-impl");
-      const tout = $$('input[name="f-dispo"]', form);
-      ee.disponibilites = tout.every((i) => i.checked) ? [] : tout.filter((i) => i.checked).map((i) => i.value);
+      ee.disponibilites = lireGrilleDispo(form);
     };
   } else if (type === "groupe") {
     const g = d.groupes.find((x) => x.id === id);
     if (!g) return;
     $("#fiche-titre").textContent = g.nom || g.id;
-    form.append(
+    ajouter(form,
       h("p", { classe: "discret" }, `Code ${g.id}`),
       h("div", { classe: "grille-champs" },
         champ("Nom", entree("f-nom", g.nom)),
@@ -669,13 +665,17 @@ function ouvrirFiche(type, id) {
     const l = d.locaux.find((x) => x.id === id);
     if (!l) return;
     $("#fiche-titre").textContent = l.nom || l.id;
-    form.append(
+    ajouter(form,
       h("p", { classe: "discret" }, `Code ${l.id}`),
       h("div", { classe: "grille-champs" },
         champ("Nom", entree("f-nom", l.nom)),
         champ("Capacité", entree("f-cap", l.capacite, { type: "number", min: 1 })),
         d.etablissement.implantations.length ? champ("Implantation", choix("f-impl", [["", "—"], ...d.etablissement.implantations.map((i) => [i.id, i.nom || i.id])], l.implantation)) : null,
         champ("Équipements", entree("f-equip", l.equipements.join("; "), { placeholder: "pc; projecteur" }))),
+      h("fieldset", { classe: "sous-bloc" }, h("legend", {}, "Jours et plages où le local est disponible"),
+        h("p", { classe: "discret" }, "Décochez les moments où le local ne peut pas servir (prêté, réservé à une autre activité…)."),
+        h("div", { classe: "defile" }, grilleDispo(d, l.disponibilites))),
+      l.indisponibilites.length ? h("p", { classe: "discret" }, "Indisponible : " + l.indisponibilites.map((i) => `${fmtDate(i.date_debut)} → ${fmtDate(i.date_fin)}${i.motif ? ` (${i.motif})` : ""}`).join(", ")) : null,
       boutonVoirHoraire("local", id),
     );
     appliquer = (nd) => {
@@ -684,6 +684,7 @@ function ouvrirFiche(type, id) {
       ll.capacite = +$("#f-cap", form).value;
       if ($("#f-impl", form)) ll.implantation = $("#f-impl", form).value || null;
       ll.equipements = $("#f-equip", form).value.split(/[;,|]/).map((x) => x.trim()).filter(Boolean);
+      ll.disponibilites = lireGrilleDispo(form);
     };
   }
 
@@ -707,6 +708,31 @@ function ouvrirFiche(type, id) {
   };
   $("#fiche").hidden = false;
   $("#fiche-form").scrollTop = 0;
+}
+
+// disponibilités hebdomadaires « jour:plage » (liste vide = toujours disponible)
+function grilleDispo(d, dispos) {
+  const plages = d.calendrier.creneaux, toujours = !dispos.length;
+  return h("table", { classe: "tableau compact dispo" }, h("thead", {}, h("tr", {}, h("th", {}), plages.map((p) => h("th", {}, p.libelle || p.id)))),
+    h("tbody", {}, d.calendrier.jours_cours.map((j) => h("tr", {}, h("th", {}, JLONG[j]), plages.map((p) => h("td", {},
+      p.jours.length && !p.jours.includes(j) ? "–" : h("input", { type: "checkbox", name: "f-dispo", value: `${j}:${p.id}`, "aria-label": `${JLONG[j]} ${p.libelle || p.id}`,
+        coche: toujours || dispos.includes(`${j}:${p.id}`) || dispos.includes(`${j}:*`) })))))));
+}
+function lireGrilleDispo(form) {
+  const tout = $$('input[name="f-dispo"]', form);
+  return tout.every((i) => i.checked) ? [] : tout.filter((i) => i.checked).map((i) => i.value);
+}
+// résumé lisible : « lun, mar, mer (matin) »
+function resumeDispo(d, dispos) {
+  if (!dispos.length) return "toujours";
+  const parts = [];
+  for (const j of d.calendrier.jours_cours) {
+    const pl = d.calendrier.creneaux.filter((p) => !p.jours.length || p.jours.includes(j));
+    const ok = pl.filter((p) => dispos.includes(`${j}:${p.id}`) || dispos.includes(`${j}:*`));
+    if (ok.length === pl.length) parts.push(j);
+    else if (ok.length) parts.push(`${j} (${ok.map((p) => (p.libelle || p.id).toLowerCase()).join(", ")})`);
+  }
+  return parts.join(", ") || "jamais";
 }
 
 function ligneAttribution(d, a = { enseignants: [], periodes: 0, groupes: [] }) {

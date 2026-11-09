@@ -36,13 +36,13 @@ def cycles_prerequis(ds: JeuDeDonnees) -> list[list[str]]:
     return cycles
 
 
-def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True) -> int:
+def capacite_unite(hz: Horizon, u: Unite, avec_enseignants: bool = True, avec_locaux: bool = True) -> int:
     """Périodes que l'unité pourrait recevoir si elle était seule (sans concurrence)."""
     par_semaine = defaultdict(list)
     for j in hz.jours:
         for d, n in hz.positions(j, u.bloc, sans_chevauchement=True):
             ch = hz.creneau(j, d, n)
-            dispo = hz.dispo_unite(u, ch, avec_enseignants)
+            dispo = hz.dispo_unite(u, ch, avec_enseignants, avec_locaux)
             if dispo:
                 for t, ok in enumerate(dispo):
                     if ok:
@@ -113,6 +113,10 @@ def avant_planification(ds: JeuDeDonnees) -> list[dict]:
                 cause = "disponibilités communes de l'enseignant" if len(u.enseignants) == 1 else \
                         "disponibilités communes des enseignants (co-enseignement)"
                 conseil = "Élargissez les disponibilités ou confiez une partie du cours à un autre enseignant."
+            elif capacite_unite(hz, u, avec_enseignants=False, avec_locaux=False) >= u.periodes:
+                cause = "jours et plages où les locaux compatibles sont disponibles"
+                conseil = ("Élargissez les disponibilités des locaux compatibles ("
+                           + ", ".join(sorted(eligibles_unite(ds, u))) + ") ou autorisez un autre local.")
             else:
                 cause = "jours/créneaux et période du groupe"
                 conseil = "Élargissez les jours/créneaux du groupe, prolongez la période ou augmentez le rythme hebdomadaire autorisé."
