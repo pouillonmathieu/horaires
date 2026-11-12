@@ -3,7 +3,11 @@
 Il illustre : modules à plusieurs cours, cours répartis entre enseignants, co-enseignement,
 attributions propres à un groupe, stages, congés, matériel limité et local attitré.
 """
+import copy
+from datetime import date
+
 from .modeles import JeuDeDonnees
+from .transposition import transposer
 
 
 def _c(id, nom, periodes, attributions, **kw):
@@ -138,3 +142,20 @@ EXEMPLE = {
 
 def jeu_exemple() -> JeuDeDonnees:
     return JeuDeDonnees.model_validate(EXEMPLE)
+
+
+# ----------------------------------------------------------------------------- exemple adapté aux paramètres
+ANCRE_EXEMPLE = date(2027, 1, 11)  # lundi de la 2e semaine ISO de 2027 : début du quadrimestre de l'exemple
+
+
+def adapter_exemple(cible: JeuDeDonnees) -> JeuDeDonnees:
+    """L'exemple, transposé dans les paramètres d'un établissement : année scolaire, jours, plages horaires,
+    congés, implantations (CENTRE, NORD… deviennent ses sites, dans l'ordre) et réglages généraux."""
+    sites = [i.id for i in cible.etablissement.implantations]
+    ex_sites = [i["id"] for i in EXEMPLE["etablissement"]["implantations"]]
+    correspondance = {s: (sites[min(k, len(sites) - 1)] if sites else None) for k, s in enumerate(ex_sites)}
+    cal = cible.calendrier
+    an = cal.date_debut.year if cal.date_debut.month >= 7 else cal.date_debut.year - 1
+    brut = copy.deepcopy(EXEMPLE)
+    brut["nom"] = f"Exemple adapté – {cible.nom}"[:200]
+    return transposer(brut, cible, correspondance, date.fromisocalendar(an + 1, 2, 1) - ANCRE_EXEMPLE)

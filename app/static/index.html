@@ -52,8 +52,13 @@
             <legend>Établissement et année scolaire</legend>
             <div class="ligne">
               <label>Nom <input id="p-nom" maxlength="200" required></label>
+              <label>Année scolaire <select id="p-annee"></select></label>
               <label>Début de l'année <input id="p-debut" type="date" required></label>
               <label>Fin de l'année <input id="p-fin" type="date" required></label>
+            </div>
+            <div class="ligne">
+              <button type="button" class="petit" id="p-fwb">Reprendre le calendrier officiel de la FWB</button>
+              <span id="p-fwb-note" class="discret aide" role="status"></span>
             </div>
             <div class="champ-groupe">
               <span class="etiquette">Jours de cours</span>
@@ -132,10 +137,12 @@
             <label>Compléter ce qui manque avec
               <select name="completer_avec" id="completer-avec"><option value="">— rien (import complet) —</option></select>
             </label>
+            <label class="case-a-cocher" id="l-garder-parametres"><input type="checkbox" name="garder_parametres" value="1" id="imp-garder" checked>
+              Garder les paramètres de l'établissement de ce jeu (année, plages, congés, implantations)</label>
             <button type="submit" class="primaire">Importer</button>
             <a href="/api/modele.xlsx" class="bouton">Modèle Excel</a>
             <a href="/api/modele-csv.zip" class="bouton">Modèle CSV</a>
-            <button type="button" id="btn-exemple">Charger l'exemple</button>
+            <button type="button" id="btn-exemple" title="Données fictives, transposées dans les paramètres de votre établissement">Charger l'exemple</button>
           </form>
           <div id="retour-import"></div>
         </div>

@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field, ValidationError
 from . import config
 from .chiffrement import Chiffreur
 from .connecteurs import ConnecteurFichier
-from .exemple import jeu_exemple
+from .calendrier_fwb import annee_scolaire_courante, calendrier_fwb
+from .exemple import adapter_exemple, jeu_exemple
+from .transposition import transposer
 from .fichiers import (
     ErreurImport, donnees_vers_csv_zip, donnees_vers_excel, donnees_vers_json, horaire_vers_excel, horaire_vers_ics,
 )
@@ -55,6 +57,10 @@ class JeuVierge(BaseModel):
     nom: str = Field("Mon établissement", max_length=200)
     etablissement: dict = Field(default_factory=dict)
     calendrier: dict
+
+
+class DemandeExemple(BaseModel):
+    adapter_a: str | None = Field(None, max_length=64, description="jeu dont on reprend les paramètres")
 
 
 class MiseAJourDonnees(BaseModel):
@@ -227,9 +233,18 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
     def modele_csv(u: Utilisateur = Depends(utilisateur_courant)):
         return _fichier(donnees_vers_csv_zip(jeu_exemple()), "modele_horaires_csv.zip", "application/zip")
 
+    @app.get("/api/calendrier-fwb")
+    def calendrier_officiel(annee: int | None = None, u: Utilisateur = Depends(utilisateur_courant)):
+        """Calendrier scolaire de la FWB : dates de l'année, congés scolaires et jours fériés."""
+        a = annee if annee is not None else annee_scolaire_courante()
+        if not 2022 <= a <= 2100:
+            raise HTTPException(422, "Année hors limites (2022 à 2100)")
+        return calendrier_fwb(a)
+
     @app.post("/api/jeux")
     async def importer(request: Request, fichier: list[UploadFile] = File(...), nom: str = Form(""),
-                       completer_avec: str = Form(""), u: Utilisateur = Depends(exige("planificateur"))):
+                       completer_avec: str = Form(""), garder_parametres: str = Form(""),
+                       u: Utilisateur = Depends(exige("planificateur"))):
         if len(fichier) > 20:
             raise HTTPException(413, "Trop de fichiers")
         recus, total = [], 0
@@ -248,12 +263,28 @@ def creer_app(stockage: Stockage | None = None) -> FastAPI:
             raise HTTPException(422, {"message": "Données invalides", "erreurs": _erreurs_lisibles(e)})
         except ErreurImport as e:
             raise HTTPException(422, {"message": str(e), "erreurs": []})
+        if complement is not None and garder_parametres in ("1", "true", "on", "oui"):
+            # les paramètres de l'établissement (assistant / onglet Paramètres) l'emportent sur ceux du fichier
+            try:
+                ds = transposer(ds.model_dump(mode="json"), complement)
+            except ValidationError as e:
+                raise HTTPException(422, {"message": "Les données importées ne correspondent pas aux paramètres de "
+                                                     "l'établissement", "erreurs": _erreurs_lisibles(e)})
         if nom.strip():
             ds.nom = nom.strip()[:200]
         return _enregistrer_jeu(request, u, ds, "fichier")
 
     @app.post("/api/jeux/exemple")
-    def importer_exemple(request: Request, u: Utilisateur = Depends(exige("planificateur"))):
+    def importer_exemple(request: Request, d: DemandeExemple | None = None,
+                         u: Utilisateur = Depends(exige("planificateur"))):
+        """L'exemple fictif ; avec `adapter_a`, transposé dans les paramètres de ce jeu (année, plages, sites…)."""
+        if d and d.adapter_a:
+            cible = JeuDeDonnees.model_validate(_jeu(request, d.adapter_a)["contenu"]["donnees"])
+            try:
+                return _enregistrer_jeu(request, u, adapter_exemple(cible), "exemple")
+            except ValidationError as e:
+                raise HTTPException(422, {"message": "L'exemple n'a pas pu être adapté à ces paramètres",
+                                          "erreurs": _erreurs_lisibles(e)})
         return _enregistrer_jeu(request, u, jeu_exemple(), "exemple")
 
     def _jeu(request: Request, jid: str) -> dict:

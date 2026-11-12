@@ -144,8 +144,10 @@ async function chargerJeux() {
   [...comp.options].slice(1).forEach((o) => o.remove());
   for (const j of etat.jeux) comp.append(h("option", { value: j.id }, `${j.nom} (${fmtDateHeure(j.cree_le)})`));
   if (etat.jeu) comp.value = etat.jeu.id;
+  $("#l-garder-parametres").hidden = !comp.value;
   afficherTableJeux();
 }
+$("#completer-avec").addEventListener("change", (e) => { $("#l-garder-parametres").hidden = !e.target.value; });
 $("#jeu-courant").addEventListener("change", async (e) => { await choisirJeu(e.target.value); montrerVue("horaires"); });
 
 async function choisirJeu(id) {
@@ -153,6 +155,7 @@ async function choisirJeu(id) {
   try { localStorage.setItem("jeu-courant", id); } catch { /* sans importance */ }
   $("#jeu-courant").value = id;
   $("#completer-avec").value = id;
+  $("#l-garder-parametres").hidden = false;
   listeDiagnostic($("#diag-jeu"), etat.jeu.diagnostic, "Aucune incohérence détectée : les données sont prêtes à être planifiées.");
   afficherEntites();
 }
@@ -211,8 +214,9 @@ $("#form-import").addEventListener("submit", async (e) => {
 $("#btn-exemple").addEventListener("click", async () => {
   const zone = vider($("#retour-import"));
   try {
-    const res = await api("/api/jeux/exemple", { method: "POST" });
-    zone.append(h("p", { classe: "succes" }, `Exemple chargé : ${res.nb_groupes} groupes, ${res.nb_cours} cours.`));
+    const res = await api("/api/jeux/exemple", { method: "POST", json: { adapter_a: etat.jeu?.id || null } });
+    zone.append(h("p", { classe: "succes" }, `Exemple chargé : ${res.nb_groupes} groupes, ${res.nb_cours} cours`
+      + (etat.jeu ? `, transposés dans les paramètres de « ${etat.jeu.nom} » (année, plages, congés, implantations).` : ".")));
     await chargerJeux(); await choisirJeu(res.id);
   } catch (err) { afficherErreur(zone.appendChild(h("div", { classe: "erreur" })), err); }
 });
@@ -249,9 +253,11 @@ function parametresParDefaut() {
     calendrier: { date_debut: an.debut, date_fin: an.fin, jours_cours: ["lun", "mar", "mer", "jeu", "ven"], cours_pendant_conges: false,
       rythme_defaut: "souple", fermetures: [],
       creneaux: [
-        { id: "matin", libelle: "Matin", heure_debut: "08:30", heure_fin: "12:00", periodes: 4, jours: [] },
-        { id: "aprem", libelle: "Après-midi", heure_debut: "13:00", heure_fin: "16:20", periodes: 4, jours: [] },
-        { id: "soir", libelle: "Soir", heure_debut: "18:00", heure_fin: "21:20", periodes: 4, jours: [] },
+        { id: "matin1", libelle: "Matin 1", heure_debut: "08:30", heure_fin: "10:10", periodes: 2, jours: [] },
+        { id: "matin2", libelle: "Matin 2", heure_debut: "10:30", heure_fin: "12:10", periodes: 2, jours: [] },
+        { id: "aprem1", libelle: "Après-midi 1", heure_debut: "13:00", heure_fin: "14:40", periodes: 2, jours: [] },
+        { id: "aprem2", libelle: "Après-midi 2", heure_debut: "15:00", heure_fin: "16:40", periodes: 2, jours: [] },
+        { id: "soir", libelle: "Soir", heure_debut: "17:30", heure_fin: "21:10", periodes: 4, jours: [] },
       ] },
   };
 }
@@ -262,6 +268,7 @@ function ouvrirAccueil() {
   $$(".vue").forEach((s) => { s.hidden = !["vue-accueil", "vue-parametres"].includes(s.id); });
   remplirParams(parametresParDefaut());
   allerEtape(1);
+  appliquerCalendrierFWB(+$("#p-annee").value);
 }
 function ouvrirParametres() {
   if (!etat.jeu) { ouvrirAccueil(); return; }
@@ -345,6 +352,31 @@ function ligneImpl(i = { id: "", nom: "", adresse: "" }) {
     h("td", {}, h("input", { valeur: i.adresse, placeholder: "Adresse", "aria-label": "Adresse" })),
     h("td", {}, h("button", { type: "button", classe: "petit danger", onclick: (e) => e.currentTarget.closest("tr").remove() }, "Retirer")));
 }
+// calendrier officiel de la Fédération Wallonie-Bruxelles : dates de l'année, congés scolaires et jours fériés
+// (les jours spéciaux déjà saisis sont gardés)
+async function appliquerCalendrierFWB(annee) {
+  const note = $("#p-fwb-note");
+  try {
+    const c = await api(`/api/calendrier-fwb?annee=${annee}`);
+    $("#p-debut").value = c.date_debut;
+    $("#p-fin").value = c.date_fin;
+    const tb = $("#p-fermetures tbody");
+    $$("tr", tb).filter((tr) => $("select", tr).value !== "special").forEach((tr) => tr.remove());
+    for (const f of c.fermetures) tb.append(ligneFermeture({ ...nouvelleFermeture, ...f }));
+    note.textContent = `${c.annee} : ${c.fermetures.length} congés et jours fériés repris. ${c.note}`;
+    note.classList.toggle("erreur", c.provisoire);
+  } catch (err) { note.textContent = `Calendrier officiel indisponible : ${err.message}`; }
+}
+function remplirAnnees(debut) {
+  const sel = vider($("#p-annee"));
+  const d = debut ? versD(debut) : new Date();
+  const an = d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+  for (let a = an - 1; a <= an + 3; a++) sel.append(h("option", { value: a }, `${a}-${a + 1}`));
+  sel.value = an;
+}
+$("#p-annee").addEventListener("change", (e) => appliquerCalendrierFWB(+e.target.value));
+$("#p-fwb").addEventListener("click", () => appliquerCalendrierFWB(+$("#p-annee").value));
+
 $("#p-ajout-fermeture").addEventListener("click", () => $("#p-fermetures tbody").append(ligneFermeture({ ...nouvelleFermeture, type: "conges" })));
 $("#p-ajout-special").addEventListener("click", () => {
   const l = ligneFermeture({ ...nouvelleFermeture, type: "special" });
@@ -360,6 +392,8 @@ function remplirParams(p) {
   const { etablissement: et, calendrier: cal } = p;
   $("#p-nom").value = p.nom;
   $("#p-debut").value = cal.date_debut; $("#p-fin").value = cal.date_fin;
+  remplirAnnees(cal.date_debut);
+  $("#p-fwb-note").textContent = "";
   const jours = vider($("#p-jours"));
   for (const j of JOURS) jours.append(h("label", { classe: "case-a-cocher" }, h("input", { type: "checkbox", value: j, coche: cal.jours_cours.includes(j) }), JLONG[j]));
   $("#p-conges").checked = !!cal.cours_pendant_conges;

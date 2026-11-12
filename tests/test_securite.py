@@ -179,3 +179,44 @@ def test_accueil_modification_et_seance(env):
     assert r.status_code == 200 and r.json()["local"] == "Distanciel"
     r = c.patch(f"/api/horaires/{hid}/seances/{s['id']}", headers=h, json={"distanciel": False})
     assert r.json()["local"] == s["local"]  # le local libéré est retrouvé
+
+
+def test_parametres_de_l_assistant_gardes_a_l_import_et_pour_l_exemple(env):
+    """Paramètres saisis dans l'assistant (année FWB, 5 plages, samedi, un seul site) : ni l'import d'un fichier
+    complet (modèle CSV) ni l'exemple ne les écrasent ; les références aux plages sont traduites."""
+    c, *_ = env
+    h = {"X-CSRF-Token": connecter(c)}
+    cal = c.get("/api/calendrier-fwb?annee=2026").json()
+    assert (cal["date_debut"], cal["date_fin"], cal["provisoire"]) == ("2026-08-24", "2027-07-02", False)
+    plages = [{"id": i, "libelle": i, "heure_debut": a, "heure_fin": b, "periodes": n} for i, a, b, n in (
+        ("matin1", "08:30", "10:10", 2), ("matin2", "10:30", "12:10", 2), ("aprem1", "13:00", "14:40", 2),
+        ("aprem2", "15:00", "16:40", 2), ("soir", "17:30", "21:10", 4))]
+    vierge = {"nom": "Institut", "etablissement": {"implantations": [{"id": "SUD"}, {"id": "EST"}]},
+              "calendrier": {"date_debut": cal["date_debut"], "date_fin": cal["date_fin"], "creneaux": plages,
+                             "jours_cours": ["lun", "mar", "mer", "jeu", "ven", "sam"], "fermetures": cal["fermetures"]}}
+    jid = c.post("/api/jeux/vierge", headers=h, json=vierge).json()["id"]
+    attendu = c.get(f"/api/jeux/{jid}").json()["donnees"]["calendrier"]
+
+    # import du modèle CSV complet (il contient ses propres paramètres et plages) en complétant avec ce jeu
+    z = c.get("/api/modele-csv.zip").content
+    r = c.post("/api/jeux", headers=h, files={"fichier": ("export.zip", z, "application/zip")},
+               data={"completer_avec": jid, "garder_parametres": "1"})
+    assert r.status_code == 200, r.text
+    d = c.get(f"/api/jeux/{r.json()['id']}").json()["donnees"]
+    assert d["calendrier"] == attendu
+    # sites de l'établissement gardés ; ceux du fichier (CENTRE, NORD) ajoutés
+    assert [i["id"] for i in d["etablissement"]["implantations"]] == ["SUD", "EST", "CENTRE", "NORD"]
+    ids = {p["id"] for p in plages}
+    assert all(set(g["creneaux"]) <= ids for g in d["groupes"])
+    assert "matin1" in {g["id"]: g for g in d["groupes"]}["INF"]["creneaux"]
+    # sans l'option, le fichier l'emporte (comportement d'un import complet)
+    r = c.post("/api/jeux", headers=h, files={"fichier": ("export.zip", z, "application/zip")}, data={"completer_avec": jid})
+    assert c.get(f"/api/jeux/{r.json()['id']}").json()["donnees"]["calendrier"]["date_debut"] == "2027-01-11"
+
+    # exemple transposé dans les paramètres du jeu
+    r = c.post("/api/jeux/exemple", headers=h, json={"adapter_a": jid})
+    assert r.status_code == 200, r.text
+    d = c.get(f"/api/jeux/{r.json()['id']}").json()["donnees"]
+    assert d["calendrier"] == attendu and r.json()["nb_erreurs"] == 0
+    assert {l["implantation"] for l in d["locaux"]} <= {"SUD", "EST"}
+    assert c.post("/api/jeux/exemple", headers=h).json()["nom"].startswith("Exemple")  # sans corps : exemple brut

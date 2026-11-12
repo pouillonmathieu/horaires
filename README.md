@@ -40,9 +40,14 @@ l'établissement, explique ce qui bloque quand tout ne peut pas être placé, et
 1. **Première connexion** : un assistant en 5 étapes décrit l'établissement. Les étapes sont l'année
    scolaire, les jours, congés et fériés ; les plages horaires et leurs périodes ; la taille habituelle
    des séances ; les implantations et les règles de déplacement ; les règles pour les enseignants.
+   Par défaut : calendrier officiel de la Fédération Wallonie-Bruxelles (dates de l'année, congés
+   scolaires, jours fériés ; `app/calendrier_fwb.py`) et 5 plages par jour (08:30–10:10, 10:30–12:10,
+   13:00–14:40, 15:00–16:40 en 2 périodes, 17:30–21:10 en 4 périodes).
    Tout reste modifiable dans le menu **Paramètres**.
-2. **Données** : import Excel/CSV (« Compléter ce qui manque avec » reprend les paramètres et les
-   données déjà saisis). Les cours, enseignants, groupes et locaux sont listés. Un clic ouvre leur
+2. **Données** : import Excel/CSV. « Compléter ce qui manque avec » reprend les données déjà saisies, et
+   l'option « Garder les paramètres de l'établissement » garde l'année, les plages, les congés et les
+   implantations même si le fichier contient les siens (les références aux plages sont traduites par
+   recouvrement horaire). L'exemple fictif est, de la même façon, transposé dans vos paramètres. Les cours, enseignants, groupes et locaux sont listés. Un clic ouvre leur
    **fiche**, modifiable :
    - **cours** : enseignants, périodes, taille des séances, rythme, implantation, locaux imposés,
      cours hybride, liste de ses séances avec bascule présentiel / distanciel ;
@@ -197,7 +202,7 @@ docker compose exec horaires python -m scripts.creer_admin admin
 pytest
 ```
 
-Les 36 tests couvrent le moteur, les imports et la sécurité :
+Les 38 tests couvrent le moteur, les imports et la sécurité :
 - **moteur** :
   - aucune double réservation (groupe, local, enseignant), période par période ;
   - respect de chaque contrainte : prérequis, co-enseignement, répartition entre enseignants,

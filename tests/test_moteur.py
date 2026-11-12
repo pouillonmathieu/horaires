@@ -441,3 +441,27 @@ def test_plage_du_samedi():
     r = _planifier(ds)
     ca = [s for s in r["seances"] if s["cours"] == "CA"]
     assert ca and all(s["jour"] == "sam" and s["periodes"] == 5 for s in ca)
+
+
+def test_calendrier_officiel_fwb():
+    from app.calendrier_fwb import calendrier_fwb, paques
+    assert paques(2027) == date(2027, 3, 28) and paques(2028) == date(2028, 4, 16)
+    publies = {  # dates publiées par la FWB (lundi → vendredi)
+        2025: ("2025-08-25", "2026-07-03", [("2025-10-20", "2025-10-31"), ("2025-12-22", "2026-01-02"),
+                                            ("2026-02-16", "2026-02-27"), ("2026-04-27", "2026-05-08")]),
+        2026: ("2026-08-24", "2027-07-02", [("2026-10-19", "2026-10-30"), ("2026-12-21", "2027-01-01"),
+                                            ("2027-02-22", "2027-03-05"), ("2027-04-26", "2027-05-07")]),
+        2027: ("2027-08-30", "2028-07-07", [("2027-10-25", "2027-11-05"), ("2027-12-27", "2028-01-07"),
+                                            ("2028-02-28", "2028-03-10"), ("2028-05-01", "2028-05-12")]),
+    }
+    for an, (debut, fin, conges) in publies.items():
+        c = calendrier_fwb(an)
+        assert (c["date_debut"], c["date_fin"], c["provisoire"]) == (debut, fin, False)
+        assert [(f["date_debut"], f["date_fin"]) for f in c["fermetures"] if f["type"] == "conges"] == conges
+    feries = {f["date_debut"]: f["motif"] for f in calendrier_fwb(2026)["fermetures"] if f["type"] == "ferie"}
+    assert set(feries) == {"2026-11-02", "2026-11-11", "2027-03-29", "2027-05-17"}  # 27/9 = dimanche, Ascension en congé
+    assert calendrier_fwb(2030)["provisoire"]
+    # le calendrier produit est accepté tel quel par le modèle
+    c = calendrier_fwb(2026)
+    JeuDeDonnees.model_validate({"calendrier": {"date_debut": c["date_debut"], "date_fin": c["date_fin"], "fermetures": c["fermetures"],
+                                                "creneaux": [{"id": "m", "heure_debut": "08:30", "heure_fin": "12:10", "periodes": 4}]}})
