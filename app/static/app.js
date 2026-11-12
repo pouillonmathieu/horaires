@@ -216,7 +216,8 @@ $("#btn-exemple").addEventListener("click", async () => {
   try {
     const res = await api("/api/jeux/exemple", { method: "POST", json: { adapter_a: etat.jeu?.id || null } });
     zone.append(h("p", { classe: "succes" }, `Exemple chargé : ${res.nb_groupes} groupes, ${res.nb_cours} cours`
-      + (etat.jeu ? `, transposés dans les paramètres de « ${etat.jeu.nom} » (année, plages, congés, implantations).` : ".")));
+      + (res.nom.startsWith("Exemple adapté") ? `, transposés dans les paramètres de « ${etat.jeu.nom} » (année, plages, congés, implantations).`
+        : " (avec ses propres paramètres).")));
     await chargerJeux(); await choisirJeu(res.id);
   } catch (err) { afficherErreur(zone.appendChild(h("div", { classe: "erreur" })), err); }
 });
